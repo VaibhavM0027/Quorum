@@ -27,6 +27,14 @@ function realtimeOrigins() {
 }
 
 const connectSrc = ["'self'", ...realtimeOrigins()];
+// Some hosts (Render, for one) only expose environment variables to the running
+// container, not to the image build. When the LiveKit origin is therefore absent
+// here, allow secure realtime transports rather than emitting a policy that
+// blocks every socket to the media server. Set LIVEKIT_URL at build time to keep
+// connect-src pinned to the exact origin.
+if (connectSrc.length === 1) {
+  connectSrc.push("https:", "wss:");
+}
 if (!isProduction) {
   // Next.js routes its dev-mode hot reload over a WebSocket on the app origin.
   connectSrc.push("ws:", "wss:");

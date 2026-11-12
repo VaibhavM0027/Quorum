@@ -11,7 +11,7 @@ import { z } from "zod";
 const schema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters long"),
-  APP_URL: z.string().default("http://localhost:4000"),
+  APP_URL: z.string().optional(),
   PORT: z.coerce.number().int().positive().default(4000),
   TRUST_PROXY: z.string().optional().default("off"),
   COOKIE_SECURE: z.string().optional().default(""),
@@ -74,7 +74,14 @@ const geminiKey = raw.GEMINI_FLASH_API_KEY || raw.GEMINI_API_KEY;
 export const env = {
   databaseUrl: raw.DATABASE_URL,
   jwtSecret: raw.JWT_SECRET,
-  appUrl: raw.APP_URL.replace(/\/$/, ""),
+  appUrl: (
+    // Render exposes the service's public origin as RENDER_EXTERNAL_URL, so
+    // invite links are correct without hardcoding the hostname. APP_URL still
+    // wins when set, which is what a custom domain needs.
+    raw.APP_URL ??
+    process.env.RENDER_EXTERNAL_URL ??
+    "http://localhost:4000"
+  ).replace(/\/$/, ""),
   port: raw.PORT,
   trustProxy: raw.TRUST_PROXY === "on",
   cookieSecure: raw.COOKIE_SECURE === "1" || raw.COOKIE_SECURE.toLowerCase() === "true",
