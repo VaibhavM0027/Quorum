@@ -1,0 +1,267 @@
+// Quorum — AI-powered Group Discussion platform
+// Database schema. PostgreSQL via Prisma.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  HOST
+  PARTICIPANT
+}
+
+enum DiscussionStatus {
+  SCHEDULED
+  LIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum DiscussionMode {
+  FREE_FLOW // participants drive the conversation; AI observes and nudges
+  AI_MODERATED // AI actively poses questions and balances participation
+}
+
+enum Relevance {
+  PENDING
+  HIGHLY_RELEVANT
+  RELEVANT
+  PARTIALLY_RELEVANT
+  IRRELEVANT
+}
+
+enum AiEventKind {
+  QUESTION // AI asked the room a question
+  NUDGE // AI encouraged a quiet participant
+  SILENCE // AI flagged that nobody is speaking
+  RELEVANCE // AI flagged drift away from the topic
+  SUMMARY // AI posted a checkpoint summary
+}
+
+enum ReportKind {
+  INDIVIDUAL
+  OVERALL
+  TRANSCRIPT
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  hostedDiscussions Discussion[]            @relation("HostedDiscussions")
+  memberships       DiscussionParticipant[]
+  messages          ChatMessage[]
+  resets            PasswordReset[]
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Discussion lifecycle
+// ---------------------------------------------------------------------------
+
+model Discussion {
+  id            String  @id @default(cuid())
+  title         String
+  topic         String
+  context       String  @default("")
+  rules         String  @default("")
+  hostId        String
+  /// Human friendly code participants type in, e.g. "K7QM2P".
+  joinCode      String  @unique
+  status        DiscussionStatus @default(SCHEDULED)
+  mode          DiscussionMode   @default(AI_MODERATED)
+
+  scheduledAt   DateTime
+  durationMin   Int      @default(30)
+  maxParticipants Int    @default(12)
+
+  aiEnabled             Boolean @default(true)
+  transcriptionEnabled  Boolean @default(true)
+  silencePromptSec      Int     @default(30)
+
+  startedAt DateTime?
+  endedAt   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  host         User                    @relation("HostedDiscussions", fields: [hostId], references: [id], onDelete: Cascade)
+  participants DiscussionParticipant[]
+  segments     TranscriptSegment[]
+  aiEvents     AiEvent[]
+  messages     ChatMessage[]
+  evaluations  Evaluation[]
+  reports      Report[]
+
+  @@index([hostId, status])
+  @@index([status, scheduledAt])
+}
+
+model DiscussionParticipant {
+  id           String @id @default(cuid())
+  discussionId String
+  userId       String
+  displayName  String
+
+  isHost               Boolean   @default(false)
+  joinedAt             DateTime?
+  leftAt               DateTime?
+  removed              Boolean   @default(false)
+  micLocked            Boolean   @default(false)
+  transcriptionConsent Boolean   @default(false)
+  consentAt            DateTime?
+  createdAt            DateTime  @default(now())
+
+  discussion Discussion          @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  segments   TranscriptSegment[]
+  evaluation Evaluation?
+
+  @@unique([discussionId, userId])
+  @@index([discussionId])
+}
+
+// ---------------------------------------------------------------------------
+// Transcription
+// ---------------------------------------------------------------------------
+
+model TranscriptSegment {
+  id            String @id @default(cuid())
+  discussionId  String
+  participantId String
+
+  text       String
+  startedAt  DateTime
+  endedAt    DateTime
+  durationMs Int      @default(0)
+  wordCount  Int      @default(0)
+
+  relevance       Relevance @default(PENDING)
+  relevanceScore  Float?
+  relevanceReason String    @default("")
+  analysisSource  String    @default("pending")
+
+  createdAt DateTime @default(now())
+
+  discussion  Discussion            @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@index([discussionId, startedAt])
+  @@index([participantId])
+}
+
+// ---------------------------------------------------------------------------
+// AI moderator output & chat
+// ---------------------------------------------------------------------------
+
+model AiEvent {
+  id           String      @id @default(cuid())
+  discussionId String
+  participantId String?
+  kind         AiEventKind
+  message      String
+  source       String      @default("gemini")
+  createdAt    DateTime    @default(now())
+
+  discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+
+  @@index([discussionId, createdAt])
+}
+
+model ChatMessage {
+  id           String   @id @default(cuid())
+  discussionId String
+  userId       String
+  name         String
+  text         String
+  createdAt    DateTime @default(now())
+
+  discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([discussionId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Evaluation & reports
+// ---------------------------------------------------------------------------
+
+model Evaluation {
+  id            String @id @default(cuid())
+  discussionId  String
+  participantId String @unique
+
+  overallScore        Float?
+  speakingMs          Int   @default(0)
+  contributions       Int   @default(0)
+  wordCount           Int   @default(0)
+  participationPct    Float @default(0)
+
+  relevantCount   Int @default(0)
+  partialCount    Int @default(0)
+  irrelevantCount Int @default(0)
+
+  averageRelevance Float?
+
+  /// Per-dimension scores: [{ key, label, weight, score, rationale }]
+  dimensions Json  @default("[]")
+  /// Bullet points: { strengths: string[], improvements: string[], evidence: string[] }
+  notes      Json  @default("{}")
+  summary    String @default("")
+
+  incomplete       Boolean @default(false)
+  incompleteReason String?
+
+  source String @default("gemini")
+  model  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  discussion  Discussion            @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@index([discussionId])
+}
+
+model Report {
+  id            String     @id @default(cuid())
+  discussionId  String
+  participantId String?
+  kind          ReportKind
+  createdAt     DateTime   @default(now())
+  lastDownloadedAt DateTime?
+
+  discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+
+  @@index([discussionId, kind])
+}

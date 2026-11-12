@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Design tokens — a calm, professional dark theme.
+   --------------------------------------------------------------------------- */
+:root {
+  --bg: #0e1512;
+  --panel: #15211c;
+  --panel-2: #1b2a23;
+  --input: #223029;
+  --border: #2b3d34;
+  --text: #f2f5f2;
+  --muted: #93a89c;
+  --accent: #34d399;
+  --accent-2: #60a5fa;
+  --danger: #f87171;
+  --warn: #fbbf24;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Form controls inherit the dark palette so text is always legible. */
+input,
+textarea,
+select {
+  background: var(--input);
+  color: var(--text);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-panel p-5;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition
+           disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent text-[#06170f] hover:brightness-110;
+  }
+
+  .btn-ghost {
+    @apply btn border border-line bg-transparent text-ink hover:bg-panel-2;
+  }
+
+  .btn-danger {
+    @apply btn bg-danger text-[#2a0a0a] hover:brightness-110;
+  }
+
+  .field {
+    @apply w-full rounded-lg border border-line bg-input px-3 py-2 text-sm text-ink
+           outline-none focus:border-accent;
+  }
+
+  .label {
+    @apply mb-1 block text-xs font-medium uppercase tracking-wide text-muted;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full border border-line px-2.5 py-0.5 text-xs text-muted;
+  }
+}
+
+/* Thin, dark scrollbars for panels. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a5145;
+}

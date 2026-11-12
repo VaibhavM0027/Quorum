@@ -1,0 +1,20 @@
+# Build context exclusions for the Docker image.
+node_modules
+.next
+.git
+.gitignore
+
+# Never bake secrets into an image.
+.env
+.env.*
+!.env.example
+
+# Development and tooling artefacts.
+tests
+*.log
+npm-debug.log*
+tsconfig.tsbuildinfo
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml

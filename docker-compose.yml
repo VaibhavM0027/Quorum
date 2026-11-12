@@ -1,0 +1,70 @@
+# Self-contained Quorum stack: PostgreSQL + LiveKit + the app.
+#
+# Usage:
+#   $env:JWT_SECRET="a-long-random-secret-at-least-32-characters"
+#   $env:GEMINI_API_KEY="..."           # optional; AI features stay off without it
+#   docker compose up --build
+#
+# Then open http://localhost:4000
+#
+# Note: this file is provided for convenience and has not been executed in the
+# authoring environment. Review the values (especially secrets) before use.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: quorum_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - quorum-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  livekit:
+    image: livekit/livekit-server:latest
+    # Dev mode listens on 7880 (WebSocket), 7881 (TCP) and 7882 (UDP) using the
+    # well-known devkey/secret pair, which the app is configured to match below.
+    command: ["--dev"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/quorum_app
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in your shell or .env}
+      APP_URL: http://localhost:4000
+      PORT: "4000"
+      COOKIE_SECURE: ""
+      # AI is optional. Leave both blank to run without it.
+      AI_ENABLED: ${AI_ENABLED:-on}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_FLASH_API_KEY: ${GEMINI_FLASH_API_KEY:-}
+      # Server talks to LiveKit over the compose network; the browser uses the
+      # published host port.
+      LIVEKIT_HOST: http://livekit:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: secret
+      LIVEKIT_URL: ws://localhost:7880
+    ports:
+      - "4000:4000"
+    # Apply the schema, then serve. For production with change history, replace
+    # `db push` with `prisma migrate deploy`.
+    command: sh -c "npx prisma db push --accept-data-loss && npm run start"
+
+volumes:
+  quorum-pg:
