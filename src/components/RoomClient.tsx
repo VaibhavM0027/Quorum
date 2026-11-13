@@ -18,6 +18,7 @@ import {
   Video,
   VideoOff,
   Volume2,
+  VolumeX,
   Radio,
   WifiOff,
   ScrollText,
@@ -32,6 +33,7 @@ import LiveMonitorPanel, {
 } from "@/components/LiveMonitorPanel";
 import { useLivekitRoom, type TileInfo } from "@/hooks/useLivekitRoom";
 import { useSpeechTranscription, type FinalSegment } from "@/hooks/useSpeechTranscription";
+import { useAssistantVoice } from "@/hooks/useAssistantVoice";
 
 export type RoomParticipant = {
   id: string;
@@ -104,6 +106,9 @@ const AI_KIND_LABEL: Record<string, string> = {
   RELEVANCE: "Stay on topic",
   SUMMARY: "Summary",
 };
+
+/** Assistant messages that are read aloud as well as shown in the card. */
+const SPOKEN_AI_KINDS = new Set(["QUESTION", "NUDGE", "SILENCE", "RELEVANCE"]);
 
 export default function RoomClient({
   user,
@@ -229,12 +234,38 @@ export default function RoomClient({
   // ---- AI discussion assistant --------------------------------------------
   const [aiEvents, setAiEvents] = useState<AiEventEntry[]>([]);
 
+  // The moderator speaks its messages aloud. It holds its tongue while a
+  // participant is talking, so it never interrupts the discussion.
+  const someoneSpeaking = useMemo(() => media.tiles.some((tile) => tile.speaking), [media.tiles]);
+  const voice = useAssistantVoice({ hold: someoneSpeaking });
+  /** Kept in a ref so the polling loop below never restarts when voice state changes. */
+  const announceRef = useRef(voice.announce);
+  useEffect(() => {
+    announceRef.current = voice.announce;
+  }, [voice.announce]);
+
+  /** Ids already seen, so a message is spoken once and only once. */
+  const seenAiEventIds = useRef(new Set<string>());
+  /** The first payload is the backlog: it is shown, but never read aloud. */
+  const aiEventsPrimed = useRef(false);
+
   const loadAiEvents = useCallback(async () => {
     try {
       const res = await fetch(`/api/discussions/${initial.id}/ai/events`, { cache: "no-store" });
       if (!res.ok) return;
       const data = (await res.json()) as { events: AiEventEntry[] };
       setAiEvents(data.events);
+
+      const fresh = data.events.filter((event) => !seenAiEventIds.current.has(event.id));
+      for (const event of data.events) seenAiEventIds.current.add(event.id);
+      if (!aiEventsPrimed.current) {
+        aiEventsPrimed.current = true;
+        return;
+      }
+      for (const event of fresh) {
+        // Verbatim: the sentence on screen is the sentence that is spoken.
+        if (SPOKEN_AI_KINDS.has(event.kind)) announceRef.current(event.message);
+      }
     } catch {
       /* transient network errors are ignored; the next poll retries */
     }
@@ -261,6 +292,13 @@ export default function RoomClient({
       clearTimeout(kickoff);
     };
   }, [discussion.aiEnabled, discussion.status, loadAiEvents, runAiTick]);
+
+  // The moderator is silent before the discussion starts and after it ends.
+  const silenceVoice = voice.stop;
+  useEffect(() => {
+    if (discussion.aiEnabled && discussion.status === "LIVE") return;
+    silenceVoice();
+  }, [discussion.aiEnabled, discussion.status, silenceVoice]);
 
   // ---- Host live monitor ---------------------------------------------------
   const [monitorBusyId, setMonitorBusyId] = useState<string | null>(null);
@@ -692,7 +730,43 @@ export default function RoomClient({
             <div className="card">
               <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
                 <Sparkles className="h-4 w-4" /> AI assistant
+                {voice.supported ? (
+                  <button
+                    type="button"
+                    onClick={() => voice.setEnabled(!voice.enabled)}
+                    title={
+                      voice.enabled
+                        ? `Mute the assistant's voice${voice.voiceName ? ` (${voice.voiceName})` : ""}`
+                        : "Unmute the assistant's voice"
+                    }
+                    className="ml-auto flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs font-normal normal-case"
+                  >
+                    {voice.enabled ? (
+                      <Volume2 className={`h-3.5 w-3.5 ${voice.speaking ? "text-accent" : ""}`} />
+                    ) : (
+                      <VolumeX className="h-3.5 w-3.5 text-muted" />
+                    )}
+                    <span className={voice.speaking ? "text-accent" : "text-muted"}>
+                      {voice.speaking ? "speaking…" : voice.enabled ? "voice on" : "voice off"}
+                    </span>
+                  </button>
+                ) : (
+                  <span className="ml-auto text-xs font-normal normal-case text-muted">
+                    voice unavailable
+                  </span>
+                )}
               </h2>
+
+              {voice.supported && voice.enabled && !voice.unlocked && (
+                <button
+                  type="button"
+                  onClick={voice.unlock}
+                  className="mt-2 flex items-center gap-2 text-xs text-accent underline"
+                >
+                  <Volume2 className="h-3.5 w-3.5" /> Let the assistant speak through your speakers
+                </button>
+              )}
+
               {aiEvents.length === 0 ? (
                 <p className="mt-2 text-sm text-muted">
                   {discussion.status === "LIVE"
@@ -702,7 +776,14 @@ export default function RoomClient({
               ) : (
                 <ul className="mt-3 space-y-3">
                   {aiEvents.slice(-8).map((event) => (
-                    <li key={event.id} className="rounded-lg border border-line bg-panel-2 px-3 py-2">
+                    <li
+                      key={event.id}
+                      className={`rounded-lg border px-3 py-2 ${
+                        event.message === voice.spokenText
+                          ? "border-accent/60 bg-accent/10"
+                          : "border-line bg-panel-2"
+                      }`}
+                    >
                       <p className="flex items-center gap-2 text-xs uppercase tracking-wide text-accent">
                         {AI_KIND_LABEL[event.kind] ?? event.kind}
                         <span className="ml-auto font-normal normal-case text-muted">
