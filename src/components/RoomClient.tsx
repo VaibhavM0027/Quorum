@@ -36,13 +36,11 @@ import LiveMonitorPanel, {
   type ParticipantAction,
 } from "@/components/LiveMonitorPanel";
 import { useLivekitRoom } from "@/hooks/useLivekitRoom";
-import { useSpeechTranscription, type FinalSegment } from "@/hooks/useSpeechTranscription";
-import { useServerTranscription } from "@/hooks/useServerTranscription";
 import { useAssistantVoice } from "@/hooks/useAssistantVoice";
 import { useRoomRecorder } from "@/hooks/useRoomRecorder";
 import { usePresenceReporter } from "@/hooks/usePresenceReporter";
 import { CONVERSATION_STATE_LABEL, coerceConversationState } from "@/lib/conversation-state";
-import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
+import { transcriptLog } from "@/lib/debug-log";
 
 export type RoomParticipant = {
   id: string;
@@ -134,7 +132,7 @@ type ParticipationEntry = {
   unansweredInvites: number;
   passCount: number;
   audioIssue: boolean;
-  /** This participant's own browser is transcribing them right now. */
+  /** This participant's microphone is being captured for transcription. */
   transcribing: boolean;
   score: number;
 };
@@ -255,93 +253,43 @@ export default function RoomClient({
     return () => clearInterval(timer);
   }, [discussion.transcriptionEnabled, discussion.status, loadTranscript]);
 
-  const postSegment = useCallback(
-    async (segment: FinalSegment) => {
-      try {
-        const res = await fetch(`/api/discussions/${discussion.id}/transcript`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            text: segment.text,
-            startedAt: segment.startedAt.toISOString(),
-            endedAt: segment.endedAt.toISOString(),
-            durationMs: segment.durationMs,
-          }),
-        });
-        if (res.ok) {
-          transcriptLog("chunk accepted by the server", { chars: segment.text.length });
-        } else {
-          const data = (await res.json().catch(() => ({}))) as { error?: string };
-          transcriptWarn("chunk rejected by the server", {
-            status: res.status,
-            error: data.error,
-          });
-        }
-        void loadTranscript();
-      } catch (err) {
-        transcriptWarn("chunk could not be sent", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-    [discussion.id, loadTranscript],
-  );
-
-  // Transcription follows the microphone, not the consent tick-box: a muted
-  // participant must never have audio captured, and nothing may be transcribed
-  // from a room the participant is only listening to.
-  const canTranscribe =
+  /**
+   * Whether this participant's voice is being transcribed right now.
+   *
+   * Transcription itself runs in the LiveKit agent, which subscribes to every
+   * participant's microphone; this browser only reports whether its own tracks
+   * are eligible. A muted microphone publishes nothing, so it is not captured —
+   * and a participant who has withdrawn consent is not captured either.
+   */
+  const transcribing =
     isLive &&
     discussion.transcriptionEnabled &&
     consented &&
     Boolean(participantId) &&
     media.micEnabled;
-  const speech = useSpeechTranscription({ enabled: canTranscribe, onSegment: postSegment });
-
-  /**
-   * Browsers without the Web Speech API (Firefox, Safari) cannot transcribe
-   * their own microphone, so they record clips and let the server do it. The
-   * microphone LiveKit is already publishing is reused, so no second permission
-   * prompt is shown. Either path keeps attribution exact — the speaker is always
-   * the person whose authenticated browser produced the chunk.
-   */
-  const localAudioTrack = useMemo(
-    () => media.tiles.find((tile) => tile.isLocal)?.audioTrack ?? null,
-    [media.tiles],
-  );
-  const serverStt = useServerTranscription({
-    discussionId: discussion.id,
-    track: localAudioTrack,
-    enabled: canTranscribe && !speech.supported,
-    onStored: loadTranscript,
-  });
-
-  /** Whichever capture path this browser uses is the one that reports. */
-  const transcribing = speech.supported ? speech.listening : serverStt.transcribing;
 
   // Keep the transcript pinned to the newest line.
   useEffect(() => {
     const el = transcriptRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [segments.length, speech.interim]);
+  }, [segments.length]);
 
   /**
-   * State, in the browser's own log, whether this participant is capturing.
+   * State, in the browser's own log, whether this participant is being
+   * captured.
    *
    * "No transcript from me" has several unrelated causes — missing consent, a
-   * muted microphone, a discussion that is not live, or a browser without the
-   * Speech API — and they are indistinguishable from the outside. Naming the
-   * one that applies turns a vague report into a diagnosable one.
+   * muted microphone, a discussion that is not live — and they are
+   * indistinguishable from the outside. Naming the one that applies turns a
+   * vague report into a diagnosable one.
    */
   useEffect(() => {
     if (!isLive || !discussion.transcriptionEnabled) return;
-    transcriptLog(canTranscribe ? "capturing this microphone" : "not capturing this microphone", {
+    transcriptLog(transcribing ? "this microphone is being transcribed" : "this microphone is not being transcribed", {
       participantId,
       consented,
       micEnabled: media.micEnabled,
-      browserSupportsSpeech: speech.supported,
-      transcribing,
-      reason: canTranscribe
+      reason: transcribing
         ? undefined
         : !participantId
           ? "not a member of this discussion"
@@ -352,13 +300,11 @@ export default function RoomClient({
               : "discussion is not live",
     });
   }, [
-    canTranscribe,
     consented,
     discussion.transcriptionEnabled,
     isLive,
     media.micEnabled,
     participantId,
-    speech.supported,
     transcribing,
   ]);
 
@@ -693,8 +639,8 @@ export default function RoomClient({
     enabled: isLive && Boolean(participantId) && !removed && media.status === "connected",
     speaking: localSpeaking,
     aiSpeaking: voice.speaking,
-    // Whichever capture path is running is what proves this browser is
-    // capturing; a live microphone alone does not.
+    // The transcription agent transcribes exactly the microphones that are
+    // live, consented and unmuted, which is the condition reported here.
     transcribing,
   });
 
@@ -1019,29 +965,17 @@ export default function RoomClient({
               <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
                 <ScrollText className="h-4 w-4" /> Live transcript
                 <span className="ml-auto text-xs font-normal normal-case">
-                  {canTranscribe
-                    ? transcribing
-                      ? "listening"
-                      : "starting…"
-                    : consented
-                      ? media.micEnabled
-                        ? "paused"
-                        : "mic off"
-                      : isLive
-                        ? "consent needed"
-                        : "offline"}
+                  {transcribing
+                    ? "listening"
+                    : !isLive
+                      ? "offline"
+                      : !discussion.transcriptionEnabled
+                        ? "off"
+                        : consented
+                          ? "mic off"
+                          : "consent needed"}
                 </span>
               </h2>
-
-              {(speech.error || serverStt.error) && (
-                <p className="mt-2 text-xs text-danger">{speech.error ?? serverStt.error}</p>
-              )}
-              {!speech.supported && (
-                <p className="mt-2 text-xs text-muted">
-                  This browser has no built-in speech recogniser, so your speech is transcribed on the
-                  server instead. Your words still appear under your own name.
-                </p>
-              )}
 
               <ol ref={transcriptRef} className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
                 {segments.length === 0 ? (
@@ -1061,7 +995,6 @@ export default function RoomClient({
                     </li>
                   ))
                 )}
-                {speech.interim && <li className="text-sm italic text-muted">… {speech.interim}</li>}
               </ol>
 
               {isLive && consented && (

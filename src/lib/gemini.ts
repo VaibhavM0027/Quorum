@@ -53,10 +53,9 @@ export type GeminiCallOptions = {
   /**
    * A short audio clip sent inline alongside the prompt, as base64.
    *
-   * Used for server-side speech to text: browsers without the Web Speech API
-   * cannot transcribe their own microphone, so they post the recording here
-   * instead. The clip must use a container the model accepts, which is why the
-   * browser sends uncompressed WAV rather than a codec-dependent format.
+   * Used for speech to text: the transcription agent sends each finished
+   * utterance here as uncompressed WAV, which is a container the model accepts
+   * without a codec.
    */
   audio?: { mimeType: string; base64: string };
   temperature?: number;

@@ -70,6 +70,33 @@ services:
     # `db push` with `prisma migrate deploy`.
     command: sh -c "npx prisma db push --accept-data-loss && npm run start"
 
+  # The transcription agent. It joins each live discussion room, subscribes to
+  # every participant's microphone and writes one transcript per participant, so
+  # without it a room is audible but silent in the transcript.
+  agent:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+      app:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/quorum_app
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in your shell or .env}
+      AI_ENABLED: ${AI_ENABLED:-on}
+      # Speech to text runs on this key; blank disables transcription.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_FLASH_API_KEY: ${GEMINI_FLASH_API_KEY:-}
+      # The agent is on the compose network, so it reaches LiveKit directly (the
+      # browser needs the published host port instead).
+      LIVEKIT_HOST: http://livekit:7880
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: secret
+    command: npm run agent
+
 volumes:
   quorum-pg:
   quorum-recordings:

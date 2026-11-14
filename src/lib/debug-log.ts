@@ -1,12 +1,12 @@
 /**
  * Opt-in diagnostics for the capture → speech-to-text → database pipeline.
  *
- * The pipeline spans several browsers and the server, and every stage can fail
- * quietly: a participant may not have consented, their microphone may be off,
- * their browser may not implement speech recognition, or the server may reject
- * a chunk it considers empty or a duplicate. Without a trace there is no way to
- * tell those apart from the outside — which is exactly how "only my own
- * transcript appears" becomes impossible to explain.
+ * The pipeline spans several browsers, the transcription agent and the server,
+ * and every stage can fail quietly: a participant may not have consented, their
+ * microphone may be off, the agent may not have been dispatched, or the store
+ * may reject a chunk it considers empty or a duplicate. Without a trace there is
+ * no way to tell those apart from the outside — which is exactly how "only my
+ * own transcript appears" becomes impossible to explain.
  *
  * Off by default and silent when off, so it costs nothing in production. Turn
  * it on with `TRANSCRIPT_DEBUG=1` on the server and

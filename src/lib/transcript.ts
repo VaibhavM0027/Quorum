@@ -1,10 +1,10 @@
 /**
  * Transcript helpers.
  *
- * Live transcription is produced by the browser's Web Speech API: every
- * participant's own browser transcribes that participant's microphone. That
- * makes speaker attribution exact (a browser only ever hears its own speaker),
- * so no audio ever leaves the participant's machine for transcription.
+ * Live transcription is produced by the transcription agent, which subscribes to
+ * every participant's microphone and reads each track on its own. A speaker is
+ * therefore always known from the track the words arrived on, never guessed from
+ * the audio.
  */
 
 /** Collapses whitespace and trims a spoken chunk. */
@@ -27,11 +27,12 @@ export function isMeaningful(text: string): boolean {
 export const MIN_SEGMENT_WORDS = 1;
 
 /**
- * A browser speech recogniser can deliver the tail of an utterance twice: a
- * restart after a network hiccup re-reports the phrase it just finished.
- * Storing it twice would double-count the participant's speaking time and skew
- * the AI's reading of the discussion, so an identical chunk arriving this soon
- * after the previous one is treated as the same utterance.
+ * The same words can reach the store twice: a recognition pass that has to
+ * restart, or a track the agent re-attaches to around a mute or a reconnect, can
+ * redeliver the tail of an utterance it had already finished. Storing it twice
+ * would double-count the participant's speaking time and skew the AI's reading
+ * of the discussion, so an identical chunk arriving this soon after the previous
+ * one is treated as the same utterance.
  */
 export const DUPLICATE_WINDOW_MS = 5000;
 

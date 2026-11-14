@@ -2,9 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
 import { loadDiscussionForUser } from "@/lib/discussions";
 import { transcriptToCsv } from "@/lib/transcript";
-import { fail, handleRouteError, ok, readJson } from "@/lib/http";
-import { transcriptSegmentSchema } from "@/lib/validation";
-import { ingestTranscriptChunk, loadSpeaker } from "@/lib/transcript-ingest";
+import { fail, handleRouteError, ok } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +14,9 @@ const MAX_SEGMENTS = 500;
 /**
  * Returns the discussion transcript in chronological order.
  * Both the host and members may read it; it is the shared record of the room.
+ *
+ * Read-only: segments are written by the transcription agent, never by a
+ * browser, so no participant can inject text attributed to somebody else.
  *
  * `?format=csv` downloads the stored transcript instead of the JSON the room
  * polls: every stored entry with its speaker, timestamps, text, speaking
@@ -104,45 +105,6 @@ export async function GET(request: Request, { params }: Params) {
         relevance: s.relevance,
       })),
     });
-  } catch (error) {
-    return handleRouteError(error);
-  }
-}
-
-/**
- * Appends a transcript chunk spoken by the signed-in participant.
- *
- * The chunk arrives already transcribed from that participant's own browser
- * speech recogniser, so the speaker is unambiguous. The browser-recorded route
- * is the fast path; browsers without a recogniser use `/stt` instead, and both
- * end in the same storage and accounting code.
- */
-export async function POST(request: Request, { params }: Params) {
-  try {
-    const user = await requireSession();
-    const { id } = await params;
-
-    const speaker = await loadSpeaker(id, user.id);
-    if (!speaker.ok) return fail(speaker.error, speaker.status);
-
-    const body = transcriptSegmentSchema.parse(await readJson(request));
-
-    // Clamp nonsensical timings rather than rejecting a valid utterance.
-    const startedAt = body.startedAt;
-    const endedAt = body.endedAt >= startedAt ? body.endedAt : new Date(startedAt.getTime() + body.durationMs);
-
-    const result = await ingestTranscriptChunk({
-      discussionId: id,
-      participant: speaker.member,
-      text: body.text,
-      startedAt,
-      endedAt,
-      durationMs: body.durationMs,
-      source: "browser",
-    });
-    if (!result.ok) return fail(result.error, result.status);
-
-    return ok({ segment: result.segment, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
   } catch (error) {
     return handleRouteError(error);
   }

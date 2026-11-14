@@ -77,11 +77,22 @@ export async function POST(request: Request) {
       where: { discussionId_userId: { discussionId: discussion.id, userId: user.id } },
     });
 
+    // Joining a discussion that transcribes is what records consent, so a
+    // participant is never silently left out of their own transcript. It is
+    // still an explicit act with a timestamp, and "Stop transcribing my voice"
+    // can withdraw it afterwards.
+    const consent = discussion.transcriptionEnabled;
+
     if (existing) {
       if (existing.removed) return fail("You were removed from this discussion.", 403);
       const updated = await prisma.discussionParticipant.update({
         where: { id: existing.id },
-        data: { leftAt: null, joinedAt: existing.joinedAt ?? new Date() },
+        data: {
+          leftAt: null,
+          joinedAt: existing.joinedAt ?? new Date(),
+          transcriptionConsent: existing.transcriptionConsent || consent,
+          consentAt: existing.consentAt ?? (consent ? new Date() : null),
+        },
       });
       // A student who only lost their connection keeps the seat they already
       // have; someone who left deliberately (and so gave it up) is seated again.
@@ -109,6 +120,8 @@ export async function POST(request: Request) {
         displayName: displayName || user.name,
         isHost: discussion.hostId === user.id,
         joinedAt: discussion.status === "LIVE" ? new Date() : null,
+        transcriptionConsent: consent,
+        consentAt: consent ? new Date() : null,
       },
     });
 

@@ -24,6 +24,26 @@ export function roomNameFor(discussionId: string, breakoutRoom?: number | null):
 }
 
 /**
+ * Reads back which discussion a room belongs to.
+ *
+ * The transcription agent is handed a room name, not a discussion id, so it has
+ * to recover the discussion on its own — including for a breakout group, where
+ * only that group's audio is in the room and every segment still has to land on
+ * the same discussion.
+ */
+export function parseRoomName(
+  roomName: string,
+): { discussionId: string; breakoutRoom: number | null } | null {
+  const match = /^discussion-(.+?)(?:-room-(\d+))?$/.exec(roomName);
+  if (!match) return null;
+  const breakoutRoom = match[2] ? Number(match[2]) : null;
+  return {
+    discussionId: match[1],
+    breakoutRoom: breakoutRoom && breakoutRoom > 0 ? breakoutRoom : null,
+  };
+}
+
+/**
  * URL the *browser* must use. Derived from LIVEKIT_HOST (http -> ws, https -> wss)
  * unless LIVEKIT_URL is set explicitly (required for LiveKit Cloud).
  */

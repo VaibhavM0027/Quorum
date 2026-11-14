@@ -128,10 +128,10 @@ export default function LiveMonitorPanel({
                     className={`pill shrink-0 ${stat.transcribing ? "text-accent" : "text-warn"}`}
                     title={
                       stat.transcribing
-                        ? "This participant's own browser is transcribing their speech right now"
+                        ? "The transcription agent is transcribing this participant right now"
                         : !stat.participant.transcriptionConsent
                           ? "This participant has not allowed transcription, so their speech is not captured"
-                          : "Not transcribing right now — their microphone is off, or their browser does not support speech recognition"
+                          : "Not transcribing right now — their microphone is off, or the transcription agent is not running"
                     }
                   >
                     {stat.transcribing

@@ -5,7 +5,6 @@ import {
   joinRequestBodySchema,
   loginSchema,
   registerSchema,
-  transcriptSegmentSchema,
 } from "@/lib/validation";
 
 describe("validation schemas", () => {
@@ -82,28 +81,6 @@ describe("validation schemas", () => {
     it("rejects an out-of-range duration", () => {
       expect(() =>
         createDiscussionSchema.parse({ title: "GD One", topic: "Topic here", durationMin: 500 }),
-      ).toThrow();
-    });
-  });
-
-  describe("transcriptSegmentSchema", () => {
-    it("coerces ISO strings into dates and defaults the duration", () => {
-      const parsed = transcriptSegmentSchema.parse({
-        text: "hello world",
-        startedAt: "2026-01-01T10:00:00.000Z",
-        endedAt: "2026-01-01T10:00:05.000Z",
-      });
-      expect(parsed.startedAt).toBeInstanceOf(Date);
-      expect(parsed.durationMs).toBe(0);
-    });
-
-    it("rejects an empty transcript chunk", () => {
-      expect(() =>
-        transcriptSegmentSchema.parse({
-          text: "   ",
-          startedAt: new Date(),
-          endedAt: new Date(),
-        }),
       ).toThrow();
     });
   });

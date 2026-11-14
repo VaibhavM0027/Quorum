@@ -5,14 +5,13 @@ import { classifyParticipantResponse } from "./participation";
 import { transcriptLog, transcriptWarn } from "./debug-log";
 
 /**
- * Shared ingestion for spoken chunks, whatever produced them.
+ * Shared ingestion for spoken chunks.
  *
- * A chunk can arrive two ways: transcribed by the speaker's own browser, or
- * recorded by their browser and transcribed on the server. Both must be
- * attached to the same participant, deduplicated the same way, logged the same
- * way, and — crucially — settle a pending invitation the same way. Keeping that
- * in one place means the two paths cannot drift apart, and a fix to the
- * accounting applies to both.
+ * There is one producer: the LiveKit agent worker, which subscribes to every
+ * participant's microphone and transcribes each track on its own. It reaches
+ * the database through here so that attribution, deduplication, logging,
+ * participant activity and — crucially — settling a pending invitation all
+ * stay in one place rather than being re-implemented beside the audio code.
  */
 
 /** Stored segment shape returned to a caller. */
@@ -29,65 +28,12 @@ export type IngestOutcome =
   | { ok: true; duplicate: boolean; segment: StoredSegmentDto }
   | { ok: false; status: number; error: string };
 
-/** The speaker a chunk belongs to, or the reason it cannot be accepted. */
-export type SpeakerCheck =
-  | { ok: true; member: { id: string; displayName: string } }
-  | { ok: false; status: number; error: string };
-
-/**
- * Resolves the sender as a speaker in this discussion and checks every
- * precondition for storing their speech.
- *
- * The participant is derived from the session, never from the request body, so
- * no caller can attribute speech to anybody but themselves.
- */
-export async function loadSpeaker(discussionId: string, userId: string): Promise<SpeakerCheck> {
-  const discussion = await prisma.discussion.findUnique({
-    where: { id: discussionId },
-    select: { id: true, status: true, transcriptionEnabled: true },
-  });
-  if (!discussion) return { ok: false, status: 404, error: "Discussion not found." };
-  if (discussion.status !== "LIVE") {
-    return {
-      ok: false,
-      status: 409,
-      error: "Transcription is only captured while the discussion is live.",
-    };
-  }
-  if (!discussion.transcriptionEnabled) {
-    return { ok: false, status: 409, error: "Transcription is disabled for this discussion." };
-  }
-
-  const member = await prisma.discussionParticipant.findUnique({
-    where: { discussionId_userId: { discussionId, userId } },
-    select: { id: true, displayName: true, removed: true, transcriptionConsent: true },
-  });
-  if (!member) {
-    transcriptWarn("chunk rejected: sender is not a member", { discussionId, userId });
-    return { ok: false, status: 403, error: "Join the discussion before sending transcript data." };
-  }
-  if (member.removed) {
-    transcriptWarn("chunk rejected: sender was removed", { participantId: member.id });
-    return { ok: false, status: 403, error: "You were removed from this discussion." };
-  }
-  if (!member.transcriptionConsent) {
-    transcriptWarn("chunk rejected: no consent recorded", {
-      participantId: member.id,
-      speaker: member.displayName,
-    });
-    return {
-      ok: false,
-      status: 403,
-      error: "Transcription consent is required before your speech is recorded.",
-    };
-  }
-
-  return { ok: true, member: { id: member.id, displayName: member.displayName } };
-}
-
 /**
  * Validates, deduplicates and stores one spoken chunk, then settles any
  * invitation it answers.
+ *
+ * The speaker is passed in rather than derived from a request, so this stays a
+ * storage function: only the caller that owns the audio can say whose it is.
  */
 export async function ingestTranscriptChunk(params: {
   discussionId: string;
@@ -98,8 +44,14 @@ export async function ingestTranscriptChunk(params: {
   durationMs: number;
   /** Where the text came from. Only used to name the log line. */
   source: "browser" | "server";
+  /**
+   * Where the audio was captured, so a stored segment can be traced back to
+   * the exact LiveKit room, identity and track it came from. Omitted by
+   * callers that have no audio capture behind them.
+   */
+  origin?: { roomId: string; participantIdentity: string; trackId: string };
 }): Promise<IngestOutcome> {
-  const { discussionId, participant, startedAt, endedAt, durationMs, source } = params;
+  const { discussionId, participant, startedAt, endedAt, durationMs, source, origin } = params;
 
   const text = normalizeTranscript(params.text);
   if (!isMeaningful(text)) {
@@ -149,6 +101,9 @@ export async function ingestTranscriptChunk(params: {
     data: {
       discussionId,
       participantId: participant.id,
+      roomId: origin?.roomId ?? "",
+      participantIdentity: origin?.participantIdentity ?? "",
+      trackId: origin?.trackId ?? "",
       text,
       startedAt,
       endedAt,
@@ -175,14 +130,19 @@ export async function ingestTranscriptChunk(params: {
     data: { lastAudioAt: spokeAt },
   });
 
-  transcriptLog("chunk stored", {
+  transcriptLog("transcript stored in PostgreSQL", {
     segmentId: segment.id,
+    roomId: origin?.roomId ?? "",
     participantId: participant.id,
-    speaker: participant.displayName,
-    source,
-    words: segment.wordCount,
-    durationMs: segment.durationMs,
+    participantIdentity: origin?.participantIdentity ?? "",
+    participantName: participant.displayName,
+    trackId: origin?.trackId ?? "",
+    transcriptText: segment.text,
     startedAt: segment.startedAt.toISOString(),
+    endedAt: segment.endedAt.toISOString(),
+    durationMs: segment.durationMs,
+    words: segment.wordCount,
+    source,
   });
 
   // If the moderator is waiting on this participant, their answer is settled

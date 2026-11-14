@@ -7,6 +7,7 @@
     "dev": "next dev -p 4000",
     "build": "next build",
     "start": "next start -p 4000",
+    "agent": "node --import tsx src/agent/worker.ts start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -17,6 +18,8 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@livekit/agents": "^1.10.0",
+    "@livekit/rtc-node": "^1.2.2",
     "@prisma/client": "^6.16.2",
     "bcryptjs": "^2.4.3",
     "dotenv": "^17.2.3",

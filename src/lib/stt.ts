@@ -3,17 +3,14 @@ import { AiUnavailableError, callGemini, geminiAvailable } from "./gemini";
 /**
  * Server-side speech to text.
  *
- * Live transcription is normally done by each participant's own browser, which
- * keeps attribution exact and costs nothing. That only works on browsers that
- * implement the Web Speech API, though — which in practice means Chromium. A
- * participant on Firefox or Safari has no recogniser at all, so they record
- * short clips of their own microphone and post them here instead, and the same
- * model that scores the discussion turns them into text.
+ * Called by the transcription agent, which subscribes to every participant's
+ * microphone in a discussion room and hands each finished utterance here. A
+ * browser cannot do this job: the Web Speech API only ever transcribes the
+ * microphone attached to the page running it, so every participant other than
+ * that one was silently left out of the transcript.
  *
- * Attribution is unaffected by the move: a clip arrives on the speaker's own
- * authenticated request, so the speaker is still known exactly, never inferred
- * from the audio. Nothing about this path is host-specific — it runs for
- * whoever needs it.
+ * Attribution is unaffected by the move: the caller already knows which track
+ * the audio came from, so the speaker is never guessed from the audio itself.
  */
 
 /**
