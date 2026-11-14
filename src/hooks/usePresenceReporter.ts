@@ -24,10 +24,22 @@ export function usePresenceReporter(params: {
   speaking: boolean;
   /** The moderator's voice is being played back in this browser right now. */
   aiSpeaking: boolean;
+  /**
+   * This browser's own speech recogniser is running right now.
+   *
+   * It is reported separately from `speaking` because the two answer different
+   * questions: audio activity says somebody is audible, whereas this says their
+   * words are actually being turned into transcript. A participant with a live
+   * microphone whose browser cannot transcribe is audible and still produces
+   * nothing, and only this flag tells the room which of the two is happening.
+   */
+  transcribing: boolean;
 }) {
-  const { discussionId, enabled, speaking, aiSpeaking } = params;
+  const { discussionId, enabled, speaking, aiSpeaking, transcribing } = params;
   /** What the server was last told, so unchanged heartbeats are not resent. */
-  const lastSent = useRef<{ speaking: boolean; aiSpeaking: boolean } | null>(null);
+  const lastSent = useRef<{ speaking: boolean; aiSpeaking: boolean; transcribing: boolean } | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!enabled) {
@@ -39,15 +51,21 @@ export function usePresenceReporter(params: {
 
     const report = (force: boolean) => {
       const previous = lastSent.current;
-      if (!force && previous && previous.speaking === speaking && previous.aiSpeaking === aiSpeaking) {
+      if (
+        !force &&
+        previous &&
+        previous.speaking === speaking &&
+        previous.aiSpeaking === aiSpeaking &&
+        previous.transcribing === transcribing
+      ) {
         return;
       }
-      lastSent.current = { speaking, aiSpeaking };
+      lastSent.current = { speaking, aiSpeaking, transcribing };
       // Fire and forget: a dropped report is corrected by the next change.
       void fetch(`/api/discussions/${discussionId}/presence`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ speaking, aiSpeaking }),
+        body: JSON.stringify({ speaking, aiSpeaking, transcribing }),
         keepalive: true,
       }).catch(() => {
         /* transient network errors are ignored; the next report retries */
@@ -58,11 +76,13 @@ export function usePresenceReporter(params: {
 
     // While somebody is audible, refresh the report so the server's "still
     // speaking" window never lapses mid-sentence. A silent room has nothing to
-    // refresh, so it stays quiet.
-    if (!speaking && !aiSpeaking) return;
-    const timer = setInterval(() => report(true), 3000);
+    // refresh — but a silent participant who is transcribing still has to prove
+    // it stays alive, so that claim is refreshed more slowly instead.
+    if (!speaking && !aiSpeaking && !transcribing) return;
+    const interval = speaking || aiSpeaking ? 3000 : 8000;
+    const timer = setInterval(() => report(true), interval);
     return () => clearInterval(timer);
-  }, [discussionId, enabled, speaking, aiSpeaking]);
+  }, [discussionId, enabled, speaking, aiSpeaking, transcribing]);
 }
 
 export default usePresenceReporter;

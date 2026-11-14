@@ -3,6 +3,7 @@ import { requireSession } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { fail, handleRouteError, ok, readJson } from "@/lib/http";
 import { presenceSchema } from "@/lib/validation";
+import { transcriptLog } from "@/lib/debug-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,7 +39,7 @@ export async function POST(request: Request, { params }: Params) {
 
     const member = await prisma.discussionParticipant.findUnique({
       where: { discussionId_userId: { discussionId: id, userId: user.id } },
-      select: { id: true, removed: true },
+      select: { id: true, displayName: true, removed: true },
     });
     if (!member) return fail("Join the discussion before reporting audio activity.", 403);
     if (member.removed) return fail("You were removed from this discussion.", 403);
@@ -50,15 +51,29 @@ export async function POST(request: Request, { params }: Params) {
     const body = presenceSchema.parse(await readJson(request));
     const now = new Date();
 
-    if (body.speaking !== undefined) {
+    if (body.speaking !== undefined || body.transcribing !== undefined) {
       await prisma.discussionParticipant.update({
         where: { id: member.id },
         data: {
-          lastAudioAt: now,
-          // Non-null while they hold the floor, cleared the moment they stop.
-          speakingSince: body.speaking ? now : null,
+          ...(body.speaking !== undefined
+            ? {
+                lastAudioAt: now,
+                // Non-null while they hold the floor, cleared the moment they stop.
+                speakingSince: body.speaking ? now : null,
+              }
+            : {}),
+          ...(body.transcribing !== undefined
+            ? { transcribing: body.transcribing, transcribingAt: now }
+            : {}),
         },
       });
+    }
+
+    if (body.transcribing !== undefined) {
+      transcriptLog(
+        body.transcribing ? "participant started transcribing" : "participant stopped transcribing",
+        { participantId: member.id, speaker: member.displayName },
+      );
     }
 
     if (body.aiSpeaking) {

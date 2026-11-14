@@ -296,6 +296,7 @@ export async function runAssistantTick(discussionId: string): Promise<AssistantT
           passCount: true,
           lastInvitedAt: true,
           audioIssueAt: true,
+          transcribingAt: true,
         },
       },
     },

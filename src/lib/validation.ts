@@ -104,12 +104,14 @@ export const transcriptSegmentSchema = z.object({
  * A browser's report of what it can hear.
  *
  * `speaking` is this participant's own microphone; `aiSpeaking` is the
- * moderator's voice being played back. Both are optional so a heartbeat can
- * carry whichever changed.
+ * moderator's voice being played back; `transcribing` is whether this
+ * participant's own browser is currently running speech recognition. All three
+ * are optional so a heartbeat can carry whichever changed.
  */
 export const presenceSchema = z.object({
   speaking: z.coerce.boolean().optional(),
   aiSpeaking: z.coerce.boolean().optional(),
+  transcribing: z.coerce.boolean().optional(),
 });
 
 // ---------------------------------------------------------------------------

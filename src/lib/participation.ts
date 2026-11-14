@@ -35,6 +35,14 @@ export const PASS_COOLDOWN_MS = 180_000;
 export const TECHNICAL_COOLDOWN_MS = 120_000;
 
 /**
+ * How long a browser's "I am transcribing" report stays valid without being
+ * refreshed. The browser heartbeats more often than this, so a recogniser that
+ * has silently died stops looking healthy instead of claiming to capture
+ * forever.
+ */
+export const TRANSCRIBING_FRESH_MS = 20_000;
+
+/**
  * Floor on the "time in the room" used when comparing how much each participant
  * has spoken. Without it, somebody who arrived ten seconds ago and said one
  * sentence would look like the loudest person in the room.
@@ -63,6 +71,8 @@ export type ParticipationParticipantSource = {
   passCount: number;
   lastInvitedAt: Date | null;
   audioIssueAt: Date | null;
+  /** Last time this participant's own browser reported it is transcribing. */
+  transcribingAt: Date | null;
 };
 
 /** The transcript columns the tracker needs. */
@@ -105,6 +115,11 @@ export type ParticipationRow = {
   unansweredInvites: number;
   passCount: number;
   lastInvitedAt: Date | null;
+  /**
+   * This participant's own browser is turning their speech into transcript
+   * right now. Distinguishes "audible but producing nothing" from "captured".
+   */
+  transcribing: boolean;
   /** Live participation score, 0–100. See `participationScore`. */
   score: number;
 };
@@ -190,6 +205,7 @@ export function buildParticipation(
       unansweredInvites: participant.unansweredInviteCount,
       passCount: participant.passCount,
       lastInvitedAt: participant.lastInvitedAt,
+      transcribing: isTranscribing(participant.transcribingAt, now),
       score: 0,
     } satisfies ParticipationRow;
   });
@@ -232,6 +248,7 @@ export async function loadParticipation(
         passCount: true,
         lastInvitedAt: true,
         audioIssueAt: true,
+        transcribingAt: true,
       },
     }),
     prisma.transcriptSegment.findMany({
@@ -259,6 +276,12 @@ export async function loadParticipation(
 export function isTechnicalIssue(audioIssueAt: Date | null, now: number): boolean {
   if (!audioIssueAt) return false;
   return now - audioIssueAt.getTime() <= TECHNICAL_COOLDOWN_MS;
+}
+
+/** True while a browser's "I am transcribing" report is still fresh. */
+export function isTranscribing(transcribingAt: Date | null, now: number): boolean {
+  if (!transcribingAt) return false;
+  return now - transcribingAt.getTime() <= TRANSCRIBING_FRESH_MS;
 }
 
 /**

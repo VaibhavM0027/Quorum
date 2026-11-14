@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Participant, Room as LKRoom, RemoteTrackPublication } from "livekit-client";
+import type {
+  LocalTrackPublication,
+  Participant,
+  RemoteTrack,
+  RemoteTrackPublication,
+  Room as LKRoom,
+} from "livekit-client";
+import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
 
 /**
  * LiveKit connection for a single discussion room.
@@ -161,16 +168,76 @@ export function useLivekitRoom(
         roomRef.current = room;
 
         const onChange = () => sync();
+
+        // The media path is logged at every step, because "this participant is
+        // audible" and "this participant is being transcribed" are different
+        // facts: audio arriving over LiveKit never becomes a transcript by
+        // itself, and only the microphone owner's own browser can transcribe it.
+        const onParticipantConnected = (participant: Participant) => {
+          transcriptLog("participant connected", {
+            identity: participant.identity,
+            name: participant.name || participant.identity,
+          });
+          sync();
+        };
+        const onParticipantDisconnected = (participant: Participant) => {
+          transcriptLog("participant disconnected", { identity: participant.identity });
+          sync();
+        };
+        const onTrackPublished = (publication: RemoteTrackPublication, participant: Participant) => {
+          transcriptLog("remote track published", {
+            identity: participant.identity,
+            kind: publication.kind,
+            sid: publication.trackSid,
+            muted: publication.isMuted,
+          });
+          sync();
+        };
+        const onTrackSubscribed = (
+          track: RemoteTrack,
+          publication: RemoteTrackPublication,
+          participant: Participant,
+        ) => {
+          transcriptLog("remote track subscribed", {
+            identity: participant.identity,
+            kind: publication.kind,
+            sid: publication.trackSid,
+            device: track.mediaStreamTrack.label,
+          });
+          sync();
+        };
+        const onTrackUnsubscribed = (
+          track: RemoteTrack,
+          publication: RemoteTrackPublication,
+          participant: Participant,
+        ) => {
+          transcriptLog("remote track unsubscribed", {
+            identity: participant.identity,
+            kind: publication.kind,
+            sid: publication.trackSid,
+            device: track.mediaStreamTrack.label,
+          });
+          sync();
+        };
+        const onLocalTrackPublished = (publication: LocalTrackPublication) => {
+          transcriptLog("local track published", {
+            kind: publication.kind,
+            sid: publication.trackSid,
+            muted: publication.isMuted,
+          });
+          sync();
+        };
+
         room
-          .on(lk.RoomEvent.ParticipantConnected, onChange)
-          .on(lk.RoomEvent.ParticipantDisconnected, onChange)
-          .on(lk.RoomEvent.TrackPublished, onChange)
+          .on(lk.RoomEvent.ParticipantConnected, onParticipantConnected)
+          .on(lk.RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
+          .on(lk.RoomEvent.TrackPublished, onTrackPublished)
           .on(lk.RoomEvent.TrackUnpublished, onChange)
-          .on(lk.RoomEvent.TrackSubscribed, onChange)
-          .on(lk.RoomEvent.TrackUnsubscribed, onChange)
+          .on(lk.RoomEvent.TrackSubscribed, onTrackSubscribed)
+          .on(lk.RoomEvent.TrackUnsubscribed, onTrackUnsubscribed)
           .on(lk.RoomEvent.TrackMuted, onChange)
           .on(lk.RoomEvent.TrackUnmuted, onChange)
-          .on(lk.RoomEvent.LocalTrackPublished, onChange)
+          .on(lk.RoomEvent.LocalTrackPublished, onLocalTrackPublished)
           .on(lk.RoomEvent.LocalTrackUnpublished, onChange)
           .on(lk.RoomEvent.ActiveSpeakersChanged, onChange)
           .on(lk.RoomEvent.Reconnecting, () => setStatus("reconnecting"))
@@ -283,12 +350,18 @@ export function useLivekitRoom(
           }
         }
         micWantedRef.current = enabled;
+        transcriptLog(enabled ? "local microphone published" : "local microphone released", {
+          sid: publication?.trackSid ?? null,
+        });
         sync();
         return null;
       } catch (err) {
         // Never leave the UI claiming a microphone that is not there.
         micWantedRef.current = false;
         setMicEnabled(false);
+        transcriptWarn("could not change the microphone", {
+          error: err instanceof Error ? err.message : String(err),
+        });
         return micErrorMessage(err);
       }
     },

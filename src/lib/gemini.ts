@@ -50,6 +50,15 @@ export type GeminiCallOptions = {
   tier?: "fast" | "smart";
   /** Ask the model to reply with parseable JSON. */
   json?: boolean;
+  /**
+   * A short audio clip sent inline alongside the prompt, as base64.
+   *
+   * Used for server-side speech to text: browsers without the Web Speech API
+   * cannot transcribe their own microphone, so they post the recording here
+   * instead. The clip must use a container the model accepts, which is why the
+   * browser sends uncompressed WAV rather than a codec-dependent format.
+   */
+  audio?: { mimeType: string; base64: string };
   temperature?: number;
   maxOutputTokens?: number;
   timeoutMs?: number;
@@ -80,7 +89,18 @@ async function requestOnce(model: string, options: GeminiCallOptions): Promise<s
         "x-goog-api-key": env.geminiKey,
       },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: options.prompt }] }],
+        contents: [
+          {
+            role: "user",
+            parts: [
+              // Audio first, then the instruction that talks about it.
+              ...(options.audio
+                ? [{ inlineData: { mimeType: options.audio.mimeType, data: options.audio.base64 } }]
+                : []),
+              { text: options.prompt },
+            ],
+          },
+        ],
         ...(options.system ? { systemInstruction: { parts: [{ text: options.system }] } } : {}),
         generationConfig: {
           temperature: options.temperature ?? 0.4,

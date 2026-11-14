@@ -37,10 +37,12 @@ import LiveMonitorPanel, {
 } from "@/components/LiveMonitorPanel";
 import { useLivekitRoom } from "@/hooks/useLivekitRoom";
 import { useSpeechTranscription, type FinalSegment } from "@/hooks/useSpeechTranscription";
+import { useServerTranscription } from "@/hooks/useServerTranscription";
 import { useAssistantVoice } from "@/hooks/useAssistantVoice";
 import { useRoomRecorder } from "@/hooks/useRoomRecorder";
 import { usePresenceReporter } from "@/hooks/usePresenceReporter";
 import { CONVERSATION_STATE_LABEL, coerceConversationState } from "@/lib/conversation-state";
+import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
 
 export type RoomParticipant = {
   id: string;
@@ -132,6 +134,8 @@ type ParticipationEntry = {
   unansweredInvites: number;
   passCount: number;
   audioIssue: boolean;
+  /** This participant's own browser is transcribing them right now. */
+  transcribing: boolean;
   score: number;
 };
 
@@ -254,7 +258,7 @@ export default function RoomClient({
   const postSegment = useCallback(
     async (segment: FinalSegment) => {
       try {
-        await fetch(`/api/discussions/${discussion.id}/transcript`, {
+        const res = await fetch(`/api/discussions/${discussion.id}/transcript`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -264,9 +268,20 @@ export default function RoomClient({
             durationMs: segment.durationMs,
           }),
         });
+        if (res.ok) {
+          transcriptLog("chunk accepted by the server", { chars: segment.text.length });
+        } else {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          transcriptWarn("chunk rejected by the server", {
+            status: res.status,
+            error: data.error,
+          });
+        }
         void loadTranscript();
-      } catch {
-        /* the next utterance retries */
+      } catch (err) {
+        transcriptWarn("chunk could not be sent", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     },
     [discussion.id, loadTranscript],
@@ -283,11 +298,69 @@ export default function RoomClient({
     media.micEnabled;
   const speech = useSpeechTranscription({ enabled: canTranscribe, onSegment: postSegment });
 
+  /**
+   * Browsers without the Web Speech API (Firefox, Safari) cannot transcribe
+   * their own microphone, so they record clips and let the server do it. The
+   * microphone LiveKit is already publishing is reused, so no second permission
+   * prompt is shown. Either path keeps attribution exact — the speaker is always
+   * the person whose authenticated browser produced the chunk.
+   */
+  const localAudioTrack = useMemo(
+    () => media.tiles.find((tile) => tile.isLocal)?.audioTrack ?? null,
+    [media.tiles],
+  );
+  const serverStt = useServerTranscription({
+    discussionId: discussion.id,
+    track: localAudioTrack,
+    enabled: canTranscribe && !speech.supported,
+    onStored: loadTranscript,
+  });
+
+  /** Whichever capture path this browser uses is the one that reports. */
+  const transcribing = speech.supported ? speech.listening : serverStt.transcribing;
+
   // Keep the transcript pinned to the newest line.
   useEffect(() => {
     const el = transcriptRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [segments.length, speech.interim]);
+
+  /**
+   * State, in the browser's own log, whether this participant is capturing.
+   *
+   * "No transcript from me" has several unrelated causes — missing consent, a
+   * muted microphone, a discussion that is not live, or a browser without the
+   * Speech API — and they are indistinguishable from the outside. Naming the
+   * one that applies turns a vague report into a diagnosable one.
+   */
+  useEffect(() => {
+    if (!isLive || !discussion.transcriptionEnabled) return;
+    transcriptLog(canTranscribe ? "capturing this microphone" : "not capturing this microphone", {
+      participantId,
+      consented,
+      micEnabled: media.micEnabled,
+      browserSupportsSpeech: speech.supported,
+      transcribing,
+      reason: canTranscribe
+        ? undefined
+        : !participantId
+          ? "not a member of this discussion"
+          : !consented
+            ? "transcription consent not given"
+            : !media.micEnabled
+              ? "microphone is off"
+              : "discussion is not live",
+    });
+  }, [
+    canTranscribe,
+    consented,
+    discussion.transcriptionEnabled,
+    isLive,
+    media.micEnabled,
+    participantId,
+    speech.supported,
+    transcribing,
+  ]);
 
   const setConsent = useCallback(
     async (next: boolean) => {
@@ -527,6 +600,7 @@ export default function RoomClient({
         unansweredInvites: tracked?.unansweredInvites ?? 0,
         passCount: tracked?.passCount ?? 0,
         audioIssue,
+        transcribing: tracked?.transcribing ?? false,
         score: tracked?.score ?? null,
       };
     });
@@ -619,6 +693,9 @@ export default function RoomClient({
     enabled: isLive && Boolean(participantId) && !removed && media.status === "connected",
     speaking: localSpeaking,
     aiSpeaking: voice.speaking,
+    // Whichever capture path is running is what proves this browser is
+    // capturing; a live microphone alone does not.
+    transcribing,
   });
 
   /** What the conversation engine believes the room is doing right now. */
@@ -808,7 +885,7 @@ export default function RoomClient({
         </button>
       )}
 
-      {isLive && discussion.transcriptionEnabled && speech.supported && !consented && (
+      {isLive && discussion.transcriptionEnabled && !consented && (
         <div className="flex flex-wrap items-center gap-3 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm">
           <ShieldCheck className="h-4 w-4 text-warn" />
           <span className="text-warn">
@@ -942,27 +1019,27 @@ export default function RoomClient({
               <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
                 <ScrollText className="h-4 w-4" /> Live transcript
                 <span className="ml-auto text-xs font-normal normal-case">
-                  {!speech.supported
-                    ? "browser not supported"
-                    : canTranscribe
-                      ? speech.listening
-                        ? "listening"
-                        : "starting…"
-                      : consented
-                        ? media.micEnabled
-                          ? "paused"
-                          : "mic off"
-                        : isLive
-                          ? "consent needed"
-                          : "offline"}
+                  {canTranscribe
+                    ? transcribing
+                      ? "listening"
+                      : "starting…"
+                    : consented
+                      ? media.micEnabled
+                        ? "paused"
+                        : "mic off"
+                      : isLive
+                        ? "consent needed"
+                        : "offline"}
                 </span>
               </h2>
 
-              {speech.error && <p className="mt-2 text-xs text-danger">{speech.error}</p>}
+              {(speech.error || serverStt.error) && (
+                <p className="mt-2 text-xs text-danger">{speech.error ?? serverStt.error}</p>
+              )}
               {!speech.supported && (
                 <p className="mt-2 text-xs text-muted">
-                  Live transcription uses the browser Speech API, available in Chromium-based browsers
-                  (Chrome, Edge, Brave). Other browsers can still follow the shared transcript.
+                  This browser has no built-in speech recogniser, so your speech is transcribed on the
+                  server instead. Your words still appear under your own name.
                 </p>
               )}
 
@@ -987,7 +1064,7 @@ export default function RoomClient({
                 {speech.interim && <li className="text-sm italic text-muted">… {speech.interim}</li>}
               </ol>
 
-              {isLive && speech.supported && consented && (
+              {isLive && consented && (
                 <button
                   type="button"
                   className="btn-ghost mt-3"

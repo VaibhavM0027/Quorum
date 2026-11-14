@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizeTranscript } from "@/lib/transcript";
+import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
 
 /**
  * Browser speech recognition (Web Speech API).
@@ -95,7 +96,10 @@ export function useSpeechTranscription({
 
   // Build the recogniser once. Rebuilt only if the language changes.
   useEffect(() => {
-    if (!supported) return;
+    if (!supported) {
+      transcriptWarn("this browser does not implement the Web Speech API", { lang });
+      return;
+    }
     const Ctor = getRecognitionCtor();
     if (!Ctor) return;
 
@@ -108,6 +112,7 @@ export function useSpeechTranscription({
     recognition.onstart = () => {
       setListening(true);
       setError(null);
+      transcriptLog("speech recognition listening", { lang });
     };
 
     recognition.onresult = (event) => {
@@ -121,6 +126,10 @@ export function useSpeechTranscription({
             const endedAt = Date.now();
             const startedAt = phraseStartRef.current ?? endedAt;
             phraseStartRef.current = null;
+            transcriptLog("utterance committed", {
+              chars: text.length,
+              durationMs: Math.max(0, endedAt - startedAt),
+            });
             onSegmentRef.current({
               text,
               startedAt: new Date(startedAt),
@@ -139,6 +148,7 @@ export function useSpeechTranscription({
     recognition.onerror = (event) => {
       // These two are normal inside a continuous session and are retried.
       if (event.error === "no-speech" || event.error === "aborted") return;
+      transcriptWarn("speech recognition error", { error: event.error });
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         wantListeningRef.current = false;
         setError("Microphone permission is required for live transcription.");
@@ -189,6 +199,7 @@ export function useSpeechTranscription({
     if (enabled) {
       wantListeningRef.current = true;
       phraseStartRef.current = null;
+      transcriptLog("transcription enabled");
       try {
         recognition.start();
       } catch {
@@ -197,6 +208,7 @@ export function useSpeechTranscription({
     } else {
       wantListeningRef.current = false;
       phraseStartRef.current = null;
+      transcriptLog("transcription disabled");
       try {
         recognition.stop();
       } catch {

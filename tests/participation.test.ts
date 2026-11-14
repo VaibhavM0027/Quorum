@@ -5,12 +5,14 @@ import {
   INVITATION_COOLDOWN_MS,
   invitationEligibility,
   isTechnicalIssue,
+  isTranscribing,
   participationScore,
   PASS_COOLDOWN_MS,
   pickInviteCandidate,
   rankInviteCandidates,
   speakingRate,
   TECHNICAL_COOLDOWN_MS,
+  TRANSCRIBING_FRESH_MS,
   type ParticipationContext,
   type ParticipationRow,
 } from "@/lib/participation";
@@ -44,6 +46,7 @@ function row(overrides: Partial<ParticipationRow> = {}): ParticipationRow {
     unansweredInvites: 0,
     passCount: 0,
     lastInvitedAt: null,
+    transcribing: false,
     score: 0,
     ...overrides,
   };
@@ -108,6 +111,7 @@ describe("participation tracker", () => {
       passCount: 0,
       lastInvitedAt: null as Date | null,
       audioIssueAt: null as Date | null,
+      transcribingAt: null as Date | null,
       ...overrides,
     });
 
@@ -183,6 +187,27 @@ describe("participation tracker", () => {
       );
       expect(snapshot.rows[0].audioIssue).toBe(true);
       expect(snapshot.rows[1].audioIssue).toBe(false);
+    });
+
+    it("treats a participant as transcribing only while their report is fresh", () => {
+      const snapshot = buildParticipation(
+        {
+          participants: [
+            participant("a", { transcribingAt: ago(1000) }),
+            participant("b", { transcribingAt: ago(TRANSCRIBING_FRESH_MS + 1000) }),
+            participant("c", { transcribingAt: null }),
+          ],
+          segments: [],
+        },
+        NOW,
+      );
+      expect(snapshot.rows.map((r) => r.transcribing)).toEqual([true, false, false]);
+    });
+
+    it("expires a transcribing claim that is not refreshed", () => {
+      expect(isTranscribing(ago(1000), NOW)).toBe(true);
+      expect(isTranscribing(ago(TRANSCRIBING_FRESH_MS + 1), NOW)).toBe(false);
+      expect(isTranscribing(null, NOW)).toBe(false);
     });
 
     it("builds the context from the room's actual talking", () => {

@@ -199,6 +199,17 @@ model DiscussionParticipant {
   micLocked            Boolean   @default(false)
   transcriptionConsent Boolean   @default(false)
   consentAt            DateTime?
+  /**
+   * Set while this participant's own browser reports it is actively transcribing
+   * their microphone. It is the positive evidence that a participant is being
+   * captured, as opposed to merely being expected to be: without it, "who is
+   * actually producing transcript" can only be guessed from consent and
+   * microphone state, which does not say whether their browser supports speech
+   * recognition at all.
+   */
+  transcribing         Boolean   @default(false)
+  /** When the last "I am transcribing" report arrived, so a stale claim expires. */
+  transcribingAt       DateTime?
   createdAt            DateTime  @default(now())
   /**
    * Numbered seat at the discussion table, 1..maxParticipants. It belongs to the

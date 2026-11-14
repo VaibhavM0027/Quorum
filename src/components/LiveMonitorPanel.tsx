@@ -39,6 +39,12 @@ export type LiveStat = {
   passCount: number;
   /** A recent microphone or connection failure excuses their silence. */
   audioIssue: boolean;
+  /**
+   * This participant's own browser is currently turning their speech into
+   * transcript. It is the only positive proof that they are being captured:
+   * consent and a live microphone say what *should* happen, not what is.
+   */
+  transcribing: boolean;
   /** Live participation score, 0–100; null until the tracker has loaded. */
   score: number | null;
 };
@@ -115,6 +121,24 @@ export default function LiveMonitorPanel({
                 {stat.audioIssue && (
                   <span className="pill shrink-0" title="Microphone or connection problem">
                     audio issue
+                  </span>
+                )}
+                {active && (
+                  <span
+                    className={`pill shrink-0 ${stat.transcribing ? "text-accent" : "text-warn"}`}
+                    title={
+                      stat.transcribing
+                        ? "This participant's own browser is transcribing their speech right now"
+                        : !stat.participant.transcriptionConsent
+                          ? "This participant has not allowed transcription, so their speech is not captured"
+                          : "Not transcribing right now — their microphone is off, or their browser does not support speech recognition"
+                    }
+                  >
+                    {stat.transcribing
+                      ? "transcribing"
+                      : stat.participant.transcriptionConsent
+                        ? "not transcribing"
+                        : "no consent"}
                   </span>
                 )}
                 {!active && (
