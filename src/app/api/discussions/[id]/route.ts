@@ -37,6 +37,13 @@ export async function GET(_request: Request, { params }: Params) {
         aiEnabled: discussion.aiEnabled,
         transcriptionEnabled: discussion.transcriptionEnabled,
         silencePromptSec: discussion.silencePromptSec,
+        inviteResponseSec: discussion.inviteResponseSec,
+        // What the conversation-management engine currently believes the room
+        // is doing. Every browser reads the same value, so they agree.
+        conversationState: discussion.conversationState,
+        conversationStateAt: discussion.conversationStateAt,
+        breakoutEnabled: discussion.breakoutEnabled,
+        breakoutGroupSize: discussion.breakoutGroupSize,
         startedAt: discussion.startedAt,
         endedAt: discussion.endedAt,
         host: discussion.host,
@@ -51,6 +58,8 @@ export async function GET(_request: Request, { params }: Params) {
           removed: p.removed,
           micLocked: p.micLocked,
           transcriptionConsent: p.transcriptionConsent,
+          seatNumber: p.seatNumber,
+          breakoutRoom: p.breakoutRoom,
         })),
       },
     });

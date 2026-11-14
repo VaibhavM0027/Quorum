@@ -28,6 +28,11 @@ const schema = z.object({
   RUBRIC_WEIGHTS: z.string().default("25,20,20,15,10,10"),
   REPORT_VISIBILITY: z.string().optional().default("own"),
 
+  /** Directory the session recordings are written to, relative to the app root or absolute. */
+  RECORDING_DIR: z.string().optional().default("data/recordings"),
+  /** Largest single recording accepted, in mebibytes. */
+  RECORDING_MAX_MB: z.coerce.number().positive().default(200),
+
   LIVEKIT_HOST: z.string().default("http://127.0.0.1:7880"),
   LIVEKIT_API_KEY: z.string().optional().default(""),
   LIVEKIT_API_SECRET: z.string().optional().default(""),
@@ -98,6 +103,9 @@ export const env = {
 
   rubricWeights: parseWeights(raw.RUBRIC_WEIGHTS),
   reportVisibility: raw.REPORT_VISIBILITY === "all" ? "all" : "own",
+
+  recordingDir: raw.RECORDING_DIR,
+  recordingMaxBytes: Math.round(raw.RECORDING_MAX_MB * 1024 * 1024),
 
   livekitHost: raw.LIVEKIT_HOST,
   livekitApiKey: raw.LIVEKIT_API_KEY,

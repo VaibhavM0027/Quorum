@@ -60,6 +60,10 @@ services:
       LIVEKIT_API_KEY: devkey
       LIVEKIT_API_SECRET: secret
       LIVEKIT_URL: ws://localhost:7880
+      # Stored session recordings. Named volume so they survive `docker compose up`.
+      RECORDING_DIR: data/recordings
+    volumes:
+      - quorum-recordings:/app/data
     ports:
       - "4000:4000"
     # Apply the schema, then serve. For production with change history, replace
@@ -68,3 +72,4 @@ services:
 
 volumes:
   quorum-pg:
+  quorum-recordings:

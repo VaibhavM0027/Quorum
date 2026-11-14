@@ -53,6 +53,13 @@ export type FinalSegment = {
   durationMs: number;
 };
 
+/**
+ * Language the recogniser listens for. Indian English accents are transcribed
+ * noticeably better with `en-IN`; a deployment can set NEXT_PUBLIC_SPEECH_LANG
+ * to change it without touching the code.
+ */
+const DEFAULT_LANG = process.env.NEXT_PUBLIC_SPEECH_LANG ?? "en-US";
+
 export type SpeechTranscription = {
   supported: boolean;
   listening: boolean;
@@ -68,7 +75,7 @@ export type SpeechTranscription = {
 export function useSpeechTranscription({
   enabled,
   onSegment,
-  lang = "en-US",
+  lang = DEFAULT_LANG,
 }: {
   enabled: boolean;
   onSegment: (segment: FinalSegment) => void;

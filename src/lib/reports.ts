@@ -2,6 +2,7 @@ import { prisma } from "./prisma";
 import { env } from "./env";
 import { MIN_WORDS_FOR_EVALUATION, computeOverallAggregate, type OverallAggregate } from "./evaluation";
 import { RUBRIC_DIMENSIONS, scoreBand } from "./rubric";
+import { recordingDownloadUrl } from "./recordings";
 
 /**
  * The report read model.
@@ -53,6 +54,16 @@ export type ReportTranscriptLine = {
   relevance: string;
 };
 
+/** The stored audio recording of the session, when one was captured. */
+export type ReportRecording = {
+  id: string;
+  /** Route that streams the audio, with range support for seeking. */
+  url: string;
+  durationMs: number;
+  byteSize: number;
+  startedAt: Date;
+};
+
 export type DiscussionReport = {
   discussion: {
     id: string;
@@ -71,6 +82,7 @@ export type DiscussionReport = {
   aggregate: OverallAggregate;
   participants: ReportParticipant[];
   transcript: ReportTranscriptLine[];
+  recording: ReportRecording | null;
   generatedAt: Date;
 };
 
@@ -130,6 +142,13 @@ export async function loadDiscussionReport(
 
   const seesEveryone = isHost || env.reportVisibility === "all";
   const aggregate = await computeOverallAggregate(discussionId);
+
+  // The most recent stored recording is the session's audio record.
+  const recording = await prisma.recording.findFirst({
+    where: { discussionId, status: "READY" },
+    orderBy: { startedAt: "desc" },
+    select: { id: true, durationMs: true, byteSize: true, startedAt: true },
+  });
 
   const toReport = (participant: (typeof discussion.participants)[number]): ReportParticipant => {
     const evaluation = participant.evaluation;
@@ -207,6 +226,15 @@ export async function loadDiscussionReport(
       startedAt: segment.startedAt,
       relevance: segment.relevance,
     })),
+    recording: recording
+      ? {
+          id: recording.id,
+          url: recordingDownloadUrl(discussionId, recording.id),
+          durationMs: recording.durationMs,
+          byteSize: recording.byteSize,
+          startedAt: recording.startedAt,
+        }
+      : null,
     generatedAt: new Date(),
   };
 }

@@ -31,6 +31,10 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
     aiEnabled: discussion.aiEnabled && env.aiEnabled,
     transcriptionEnabled: discussion.transcriptionEnabled,
     silencePromptSec: discussion.silencePromptSec,
+    inviteResponseSec: discussion.inviteResponseSec,
+    conversationState: discussion.conversationState,
+    breakoutEnabled: discussion.breakoutEnabled,
+    breakoutGroupSize: discussion.breakoutGroupSize,
     scheduledAt: discussion.scheduledAt.toISOString(),
     startedAt: discussion.startedAt?.toISOString() ?? null,
     endedAt: discussion.endedAt?.toISOString() ?? null,
@@ -46,6 +50,8 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
       removed: p.removed,
       micLocked: p.micLocked,
       transcriptionConsent: p.transcriptionConsent,
+      seatNumber: p.seatNumber,
+      breakoutRoom: p.breakoutRoom,
     })),
   };
 

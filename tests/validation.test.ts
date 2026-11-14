@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDiscussionSchema,
   joinDiscussionSchema,
+  joinRequestBodySchema,
   loginSchema,
   registerSchema,
   transcriptSegmentSchema,
@@ -42,6 +43,29 @@ describe("validation schemas", () => {
     it("uppercases and trims the join code", () => {
       const parsed = joinDiscussionSchema.parse({ code: " k7qm2p " });
       expect(parsed.code).toBe("K7QM2P");
+    });
+  });
+
+  describe("joinRequestBodySchema", () => {
+    it("accepts an absent body, because the code may come from the query string", () => {
+      expect(joinRequestBodySchema.parse({})).toEqual({});
+    });
+
+    it("uppercases and trims a code supplied in the body", () => {
+      const parsed = joinRequestBodySchema.parse({ code: " k7qm2p ", displayName: " Asha " });
+      expect(parsed.code).toBe("K7QM2P");
+      expect(parsed.displayName).toBe("Asha");
+    });
+
+    it("rejects a non-string code instead of throwing inside the route", () => {
+      // A PowerShell/JSON client that serialises the code as an object used to
+      // reach `body.code.trim()` and surface as a 500 with an internal message.
+      expect(() => joinRequestBodySchema.parse({ code: { value: "K7QM2P" } })).toThrow();
+      expect(() => joinRequestBodySchema.parse({ code: 1234 })).toThrow();
+    });
+
+    it("rejects a code that is too short", () => {
+      expect(() => joinRequestBodySchema.parse({ code: "ab" })).toThrow();
     });
   });
 

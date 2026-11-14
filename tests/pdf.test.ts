@@ -87,6 +87,7 @@ function sampleReport(overrides: Partial<DiscussionReport> = {}): DiscussionRepo
         relevance: "RELEVANT",
       },
     ],
+    recording: null,
     generatedAt: new Date("2026-01-01T11:00:00Z"),
     ...overrides,
   };
@@ -128,5 +129,20 @@ describe("PDF report rendering", () => {
     });
     const pdf = await renderOverallReport(report);
     expect(isPdf(pdf)).toBe(true);
+  });
+
+  it("names the stored recording and transcript when both exist", async () => {
+    const report = sampleReport({
+      recording: {
+        id: "rec1",
+        url: "/api/discussions/d1/recordings/rec1",
+        durationMs: 1_800_000,
+        byteSize: 12 * 1024 * 1024,
+        startedAt: new Date("2026-01-01T10:05:00Z"),
+      },
+    });
+    const pdf = await renderOverallReport(report);
+    expect(isPdf(pdf)).toBe(true);
+    expect(pdf.length).toBeGreaterThan(1_000);
   });
 });

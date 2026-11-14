@@ -330,6 +330,18 @@ function discussionMeta(doc: PDFKit.PDFDocument, report: DiscussionReport): void
       `${formatDate(report.discussion.startedAt)} → ${formatDate(report.discussion.endedAt)}`,
     ],
     ["Status", report.discussion.status],
+    [
+      "Stored transcript",
+      report.transcript.length > 0
+        ? `${report.transcript.length} entries, exportable from the discussion report page`
+        : "No speech was transcribed",
+    ],
+    [
+      "Stored recording",
+      report.recording
+        ? `${formatDuration(report.recording.durationMs)} of audio, playable from the discussion report page`
+        : "No recording was captured for this session",
+    ],
   ]);
   if (report.discussion.context) {
     doc.moveDown(0.3);

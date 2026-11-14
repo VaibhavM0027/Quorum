@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
+import { assignBreakoutRooms, assignSeat, releaseSeat } from "@/lib/discussions";
 import { fail, handleRouteError, ok, readJson } from "@/lib/http";
 import { participantControlSchema } from "@/lib/validation";
 
@@ -25,7 +26,7 @@ export async function PATCH(request: Request, { params }: Params) {
 
     const discussion = await prisma.discussion.findUnique({
       where: { id },
-      select: { id: true, hostId: true },
+      select: { id: true, hostId: true, maxParticipants: true },
     });
     if (!discussion) return fail("Discussion not found.", 404);
     if (discussion.hostId !== user.id) {
@@ -57,6 +58,19 @@ export async function PATCH(request: Request, { params }: Params) {
       data,
       select: { id: true, removed: true, micLocked: true },
     });
+
+    // Someone who was removed gives their seat up for the next student; someone
+    // who is restored is seated again, in the lowest free chair.
+    if (action === "remove") {
+      await releaseSeat(id, participantId);
+    } else if (action === "restore") {
+      await assignSeat(id, participantId, discussion.maxParticipants);
+    }
+    // A removal takes a student out of their group, and a restore puts them
+    // back; either way the groups are rebalanced from the same allocator.
+    if (action === "remove" || action === "restore") {
+      await assignBreakoutRooms(id);
+    }
 
     return ok({ participant: updated });
   } catch (error) {

@@ -6,6 +6,10 @@ import type { Participant, Room as LKRoom, RemoteTrackPublication } from "liveki
 /**
  * LiveKit connection for a single discussion room.
  *
+ * `breakoutRoom` names the group this browser belongs in: null is the main
+ * room, a number is that breakout group's own room. Changing it reconnects the
+ * client, which is how a student follows the host's allocation.
+ *
  * `livekit-client` is imported dynamically because it touches browser globals
  * and must never run during server rendering.
  */
@@ -31,6 +35,23 @@ function parseHost(metadata: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/** Turns a getUserMedia failure into something a participant can act on. */
+function micErrorMessage(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  const message = error instanceof Error ? error.message : "";
+
+  if (name === "NotAllowedError" || name === "PermissionDeniedError" || /permission|denied/i.test(message)) {
+    return "Microphone access is blocked. Allow microphone permission for this site, then try again.";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError" || /device.*not.*found/i.test(message)) {
+    return "No microphone was found on this device.";
+  }
+  if (name === "NotReadableError" || name === "TrackStartError" || /in use|could not start/i.test(message)) {
+    return "Another application is using your microphone. Close it and try again.";
+  }
+  return message || "Could not access the microphone";
 }
 
 /** Reads the first published video/audio track for a participant. */
@@ -68,7 +89,11 @@ function describeParticipant(participant: Participant, isLocal: boolean): TileIn
   };
 }
 
-export function useLivekitRoom(discussionId: string, shouldConnect: boolean) {
+export function useLivekitRoom(
+  discussionId: string,
+  breakoutRoom: number | null,
+  shouldConnect: boolean,
+) {
   const roomRef = useRef<LKRoom | null>(null);
   const [status, setStatus] = useState<LivekitStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +101,15 @@ export function useLivekitRoom(discussionId: string, shouldConnect: boolean) {
   const [micEnabled, setMicEnabled] = useState(false);
   const [camEnabled, setCamEnabled] = useState(false);
   const [needsAudioUnblock, setNeedsAudioUnblock] = useState(false);
+  /**
+   * The microphone state the participant last chose.
+   *
+   * Moving to a breakout room tears the connection down and builds a new one,
+   * and a fresh connection starts with the microphone off. Remembering the
+   * choice lets it be restored, so being moved to a group does not silently
+   * mute someone who was taking part.
+   */
+  const micWantedRef = useRef(false);
 
   /** Rebuilds the tile list from the current room state. */
   const sync = useCallback(() => {
@@ -101,7 +135,9 @@ export function useLivekitRoom(discussionId: string, shouldConnect: boolean) {
       setStatus("connecting");
       setError(null);
       try {
-        const tokenRes = await fetch(`/api/livekit/token?discussionId=${encodeURIComponent(discussionId)}`, {
+        const params = new URLSearchParams({ discussionId });
+        if (breakoutRoom !== null) params.set("room", String(breakoutRoom));
+        const tokenRes = await fetch(`/api/livekit/token?${params.toString()}`, {
           cache: "no-store",
         });
         const data = (await tokenRes.json().catch(() => ({}))) as {
@@ -143,6 +179,10 @@ export function useLivekitRoom(discussionId: string, shouldConnect: boolean) {
             sync();
           })
           .on(lk.RoomEvent.Disconnected, () => {
+            // A room we have already moved on from can report its disconnect
+            // after the new one is up; ignoring it stops that late event from
+            // clearing the room we are actually in.
+            if (roomRef.current !== room) return;
             setStatus("idle");
             roomRef.current = null;
             setTiles([]);
@@ -161,6 +201,18 @@ export function useLivekitRoom(discussionId: string, shouldConnect: boolean) {
         setStatus("connected");
         // Browsers block remote audio until the user interacts with the page.
         setNeedsAudioUnblock(!room.canPlaybackAudio);
+
+        // A new connection starts muted; put back the microphone state the
+        // participant had chosen before they were moved.
+        if (micWantedRef.current) {
+          try {
+            await room.localParticipant.setMicrophoneEnabled(true);
+          } catch {
+            // The device may have gone; never claim a microphone that is not there.
+            micWantedRef.current = false;
+          }
+        }
+
         sync();
       } catch (err) {
         if (disposed) return;
@@ -177,7 +229,7 @@ export function useLivekitRoom(discussionId: string, shouldConnect: boolean) {
       roomRef.current = null;
       if (room) void room.disconnect();
     };
-  }, [discussionId, shouldConnect, sync]);
+  }, [discussionId, breakoutRoom, shouldConnect, sync]);
 
   /** Some browsers need a user gesture before remote audio is audible. */
   const startAudio = useCallback(async () => {
@@ -191,31 +243,72 @@ export function useLivekitRoom(discussionId: string, shouldConnect: boolean) {
     }
   }, []);
 
+  /**
+   * Turns the microphone on or off. Returns an error message, or null on success.
+   *
+   * Switching it off does two things: the published track is muted (so not a
+   * single audio packet leaves the browser) *and* the capture device is released.
+   * Muting alone would leave `MediaStreamTrack.enabled = false` capturing, which
+   * is why the browser keeps showing its recording indicator and why anything
+   * reading the microphone — such as the speech recogniser — keeps hearing the
+   * room. Releasing the device is what makes "microphone off" true rather than a
+   * label. Switching it back on republishes through LiveKit's normal path.
+   *
+   * Because nothing stays published while the microphone is off, a reconnection
+   * has nothing to bring back: the microphone cannot come on by itself.
+   */
+  const applyMic = useCallback(
+    async (enabled: boolean): Promise<string | null> => {
+      const room = roomRef.current;
+      if (!room) return null;
+      if (room.localParticipant.isMicrophoneEnabled === enabled) {
+        micWantedRef.current = enabled;
+        return null;
+      }
+
+      setError(null);
+      try {
+        const publication = await room.localParticipant.setMicrophoneEnabled(enabled);
+        if (!enabled) {
+          const [anyAudio] = room.localParticipant.audioTrackPublications.values();
+          const track = publication?.track ?? anyAudio?.track;
+          // `stopOnUnpublish` stops the underlying MediaStreamTrack, releasing
+          // the device. Failing here is not fatal: the track is already muted.
+          if (track) {
+            try {
+              await room.localParticipant.unpublishTrack(track, true);
+            } catch {
+              /* the mute above already stops any transmission */
+            }
+          }
+        }
+        micWantedRef.current = enabled;
+        sync();
+        return null;
+      } catch (err) {
+        // Never leave the UI claiming a microphone that is not there.
+        micWantedRef.current = false;
+        setMicEnabled(false);
+        return micErrorMessage(err);
+      }
+    },
+    [sync],
+  );
+
   const toggleMic = useCallback(async () => {
     const room = roomRef.current;
     if (!room) return;
-    try {
-      await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);
-      sync();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not access the microphone");
-    }
-  }, [sync]);
+    const failure = await applyMic(!room.localParticipant.isMicrophoneEnabled);
+    if (failure) setError(failure);
+  }, [applyMic]);
 
   /** Explicitly enables or disables the microphone (used when the host locks it). */
   const setMic = useCallback(
     async (enabled: boolean) => {
-      const room = roomRef.current;
-      if (!room) return;
-      if (room.localParticipant.isMicrophoneEnabled === enabled) return;
-      try {
-        await room.localParticipant.setMicrophoneEnabled(enabled);
-        sync();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not access the microphone");
-      }
+      const failure = await applyMic(enabled);
+      if (failure) setError(failure);
     },
-    [sync],
+    [applyMic],
   );
 
   const toggleCam = useCallback(async () => {

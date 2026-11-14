@@ -36,7 +36,11 @@ const EVALUATOR_SYSTEM =
   "You are a fair, experienced examiner of group discussions. You judge only the substance of " +
   "what was said. You never penalise accent, grammar, fluency, speaking speed or hesitation. " +
   "You give lower scores for absence of evidence, not for brevity: a short, precise contribution " +
-  "can score highly. When evidence is thin, you say so in the rationale instead of guessing.";
+  "can score highly. When evidence is thin, you say so in the rationale instead of guessing. " +
+  "You never penalise absence caused by circumstance: a microphone or connection failure, a " +
+  "retracted or unused invitation, a late arrival, attentive listening or thinking time are not " +
+  "failures to participate. The only participation-shortfall signal you may weigh, and only " +
+  "lightly, is a repeated failure to answer invitations when the participant was able to speak.";
 
 export type Utterance = {
   text: string;
@@ -65,6 +69,18 @@ export type ParticipantStats = {
   averageRelevance: number | null;
   firstSpokeAt: Date | null;
   lastSpokeAt: Date | null;
+  /** How long the participant was in the discussion, in milliseconds. */
+  presentMs: number;
+  /** How many times the moderator offered them the floor. */
+  invitedCount: number;
+  /** Invitations the participant took up. */
+  answeredInvites: number;
+  /** Invitations met with silence — the only participation shortfall that counts. */
+  unansweredInvites: number;
+  /** Invitations politely declined. Respected, and never penalised. */
+  passCount: number;
+  /** A recent, unrecovered microphone or connection failure. Never penalised. */
+  audioIssue: boolean;
   utterances: Utterance[];
 };
 
@@ -92,6 +108,11 @@ export async function computeDiscussionStats(discussionId: string): Promise<Disc
           joinedAt: true,
           leftAt: true,
           removed: true,
+          invitedCount: true,
+          answeredInviteCount: true,
+          unansweredInviteCount: true,
+          passCount: true,
+          audioIssueAt: true,
         },
       },
       segments: {
@@ -144,6 +165,14 @@ export async function computeDiscussionStats(discussionId: string): Promise<Disc
           : null,
       firstSpokeAt: mine[0]?.startedAt ?? null,
       lastSpokeAt: mine.at(-1)?.startedAt ?? null,
+      presentMs: participant.joinedAt
+        ? Math.max(0, (participant.leftAt ?? new Date()).getTime() - participant.joinedAt.getTime())
+        : 0,
+      invitedCount: participant.invitedCount,
+      answeredInvites: participant.answeredInviteCount,
+      unansweredInvites: participant.unansweredInviteCount,
+      passCount: participant.passCount,
+      audioIssue: participant.audioIssueAt !== null,
       utterances: mine.map((s) => ({
         text: s.text,
         relevance: s.relevance,
@@ -259,6 +288,11 @@ export async function evaluateParticipant(params: {
     stats.averageRelevance !== null
       ? `- Average relevance score: ${stats.averageRelevance}/100 (room average: ${params.roomAverageRelevance ?? "n/a"}).`
       : "",
+    `- Time present in the discussion: ${(stats.presentMs / 60000).toFixed(1)} minutes.`,
+    `- Moderator invitations: ${stats.invitedCount} offered, ${stats.answeredInvites} taken up, ${stats.passCount} politely declined, ${stats.unansweredInvites} met with silence.`,
+    stats.audioIssue
+      ? "- A microphone or connection failure was recorded for this participant; treat any resulting silence as circumstantial, not as disengagement."
+      : "",
     "",
     "Score the following rubric dimensions from 0 to 100:",
     rubricList,
@@ -267,6 +301,8 @@ export async function evaluateParticipant(params: {
     "- Ground every score in the transcript. Cite specific moments in the rationale.",
     "- Do not reward long speaking time on its own; participation is only one dimension.",
     "- Judge the content, never the delivery style.",
+    "- A declined invitation, a recorded microphone or connection failure, a late arrival, attentive listening and thinking time are never grounds for a lower score.",
+    "- Only a repeated failure to answer an invitation, when the participant was able to speak, may weigh lightly against Active Participation. Even then, the reduction must be small.",
     "",
     'Return JSON only: {"dimensions":[{"key":"topic_relevance","score":78,"rationale":"..."}],"strengths":["..."],"improvements":["..."],"evidence":["<short direct quote>"],"summary":"<2-3 sentences>"}',
     "",

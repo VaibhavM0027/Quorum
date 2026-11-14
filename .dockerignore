@@ -18,3 +18,7 @@ README.md
 Dockerfile
 .dockerignore
 docker-compose.yml
+
+# Local session recordings. The image creates an empty store of its own, and
+# copying capture files into every build would bloat the layer for no benefit.
+data

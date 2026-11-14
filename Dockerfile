@@ -45,6 +45,11 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 
 RUN addgroup -S nodejs && adduser -S nextjs -G nodejs
+# Session recordings are written at run time, and the runtime user owns nothing
+# under /app yet. Create the store and hand it to that user, otherwise the first
+# upload fails with EACCES. Mount a persistent disk here in production (see
+# render.yaml): a container filesystem is discarded on every deploy.
+RUN mkdir -p /app/data/recordings && chown -R nextjs:nodejs /app/data
 
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules

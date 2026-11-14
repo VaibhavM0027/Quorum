@@ -73,6 +73,7 @@ export async function POST(request: Request) {
         aiEnabled: body.aiEnabled,
         transcriptionEnabled: body.transcriptionEnabled,
         silencePromptSec: body.silencePromptSec,
+        inviteResponseSec: body.inviteResponseSec,
         // The host is a participant of their own room.
         participants: {
           create: { userId: user.id, displayName: user.name, isHost: true },

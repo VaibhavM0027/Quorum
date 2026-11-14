@@ -81,6 +81,28 @@ services:
       # the whole room's results.
       - key: REPORT_VISIBILITY
         value: own
+      # Where stored session recordings are written. The Dockerfile creates this
+      # directory and gives it to the runtime user.
+      - key: RECORDING_DIR
+        value: data/recordings
+      # Largest single recording accepted, in MB.
+      - key: RECORDING_MAX_MB
+        value: "200"
+
+##############################################################################
+# Session recordings live on disk, and a container filesystem is discarded on
+# every deploy. To keep them, attach a persistent disk and drop the leading "#".
+# Disks are not available on free instances, so this requires a paid plan above.
+#
+#   disk:
+#     name: quorum-recordings
+#     mountPath: /app/data
+#     sizeGB: 5
+#
+# Mount the parent directory (`/app/data`), not the store itself: Render mounts
+# over the path, so mounting `/app/data/recordings` would hide the directory the
+# image already prepared and leave it unwritable.
+##############################################################################
 
 ##############################################################################
 # Optional: apply the schema on every deploy instead of running `prisma db push`

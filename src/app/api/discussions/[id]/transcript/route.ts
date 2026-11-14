@@ -1,9 +1,17 @@
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
 import { loadDiscussionForUser } from "@/lib/discussions";
-import { countWords, isMeaningful, normalizeTranscript } from "@/lib/transcript";
+import {
+  countWords,
+  isDuplicateSegment,
+  isMeaningful,
+  normalizeTranscript,
+  transcriptToCsv,
+} from "@/lib/transcript";
 import { fail, handleRouteError, ok, readJson } from "@/lib/http";
 import { transcriptSegmentSchema } from "@/lib/validation";
+import { applyInvitationOutcome } from "@/lib/ai-assistant";
+import { classifyParticipantResponse } from "@/lib/participation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +23,11 @@ const MAX_SEGMENTS = 500;
 /**
  * Returns the discussion transcript in chronological order.
  * Both the host and members may read it; it is the shared record of the room.
+ *
+ * `?format=csv` downloads the stored transcript instead of the JSON the room
+ * polls: every stored entry with its speaker, timestamps, text, speaking
+ * duration and word count. The JSON view is capped so the live room stays
+ * responsive; the export is not, because it is the permanent record.
  */
 export async function GET(request: Request, { params }: Params) {
   try {
@@ -24,11 +37,13 @@ export async function GET(request: Request, { params }: Params) {
     const access = await loadDiscussionForUser(id, user.id);
     if (!access) return fail("Discussion not found, or you do not have access to it.", 404);
 
-    const since = new URL(request.url).searchParams.get("since");
+    const search = new URL(request.url).searchParams;
+    const since = search.get("since");
     const sinceDate = since ? new Date(since) : null;
     if (sinceDate && Number.isNaN(sinceDate.getTime())) {
       return fail("`since` must be an ISO date.", 400);
     }
+    const asCsv = search.get("format") === "csv";
 
     const segments = await prisma.transcriptSegment.findMany({
       where: {
@@ -36,9 +51,50 @@ export async function GET(request: Request, { params }: Params) {
         ...(sinceDate ? { startedAt: { gt: sinceDate } } : {}),
       },
       orderBy: { startedAt: "asc" },
-      take: MAX_SEGMENTS,
+      ...(asCsv ? {} : { take: MAX_SEGMENTS }),
       include: { participant: { select: { displayName: true, isHost: true, userId: true } } },
     });
+
+    if (asCsv) {
+      const csv = transcriptToCsv(
+        segments.map((segment) => ({
+          discussionId: id,
+          userId: segment.participant.userId,
+          studentName: segment.participant.displayName,
+          startedAt: segment.startedAt,
+          endedAt: segment.endedAt,
+          text: segment.text,
+          durationMs: segment.durationMs,
+          wordCount: segment.wordCount,
+        })),
+      );
+
+      // Note the export so the dashboard can show what has been downloaded,
+      // exactly as the PDF endpoints do.
+      const existing = await prisma.report.findFirst({
+        where: { discussionId: id, kind: "TRANSCRIPT", participantId: null },
+        select: { id: true },
+      });
+      if (existing) {
+        await prisma.report.update({
+          where: { id: existing.id },
+          data: { lastDownloadedAt: new Date() },
+        });
+      } else {
+        await prisma.report.create({
+          data: { discussionId: id, kind: "TRANSCRIPT", lastDownloadedAt: new Date() },
+        });
+      }
+
+      return new Response(csv, {
+        status: 200,
+        headers: {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="quorum-${id}-transcript.csv"`,
+          "cache-control": "no-store",
+        },
+      });
+    }
 
     return ok({
       segments: segments.map((s) => ({
@@ -103,6 +159,31 @@ export async function POST(request: Request, { params }: Params) {
     const startedAt = body.startedAt;
     const endedAt = body.endedAt >= startedAt ? body.endedAt : new Date(startedAt.getTime() + body.durationMs);
 
+    // Drop a re-delivered copy of the participant's previous utterance.
+    const previous = await prisma.transcriptSegment.findFirst({
+      where: { discussionId: id, participantId: member.id },
+      orderBy: { startedAt: "desc" },
+      select: {
+        id: true,
+        text: true,
+        startedAt: true,
+        endedAt: true,
+        durationMs: true,
+        wordCount: true,
+      },
+    });
+
+    if (previous && isDuplicateSegment(previous, text, startedAt)) {
+      return ok({
+        segment: {
+          ...previous,
+          startedAt: previous.startedAt.toISOString(),
+          endedAt: previous.endedAt.toISOString(),
+        },
+        duplicate: true,
+      });
+    }
+
     const segment = await prisma.transcriptSegment.create({
       data: {
         discussionId: id,
@@ -122,6 +203,35 @@ export async function POST(request: Request, { params }: Params) {
         wordCount: true,
       },
     });
+
+    // A committed transcript is proof that this participant had the floor even
+    // if their browser never reported audio activity to us. Stamping their
+    // latest audio makes the moderator wait on somebody who is already talking
+    // instead of inviting them.
+    const spokeAt = new Date();
+    await prisma.discussionParticipant.update({
+      where: { id: member.id },
+      data: { lastAudioAt: spokeAt },
+    });
+
+    // If the moderator is waiting on this participant, their answer is settled
+    // here rather than on the next tick, so the room's countdown stops the
+    // moment the floor is taken — or, if they asked to be excused, the moment
+    // they say so.
+    const pendingInvite = await prisma.invitation.findFirst({
+      where: { discussionId: id, participantId: member.id, status: "PENDING" },
+      select: { id: true },
+    });
+    if (pendingInvite) {
+      const kind = classifyParticipantResponse(text);
+      await applyInvitationOutcome({
+        invitationId: pendingInvite.id,
+        participantId: member.id,
+        kind: kind === "pass" ? "pass" : kind === "technical" ? "technical" : "answered",
+        segmentId: segment.id,
+        now: spokeAt.getTime(),
+      });
+    }
 
     return ok(
       {

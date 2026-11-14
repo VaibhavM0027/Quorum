@@ -6,11 +6,13 @@ import {
   FileText,
   Gauge,
   MessageSquareQuote,
+  Mic,
   Users2,
   AlertTriangle,
 } from "lucide-react";
 import { getSession } from "@/lib/auth";
 import { loadDiscussionReport, needsMoreEvidence, orderedDimensions } from "@/lib/reports";
+import { formatBytes } from "@/lib/recordings";
 import { scoreBand } from "@/lib/rubric";
 import ReportCharts from "@/components/ReportCharts";
 import RunEvaluationButton from "@/components/RunEvaluationButton";
@@ -64,8 +66,14 @@ export default async function ReportsPage({ params }: { params: Promise<{ id: st
           </p>
         </div>
         <a
+          href={`/api/discussions/${report.discussion.id}/transcript?format=csv`}
+          className="btn-ghost ml-auto"
+        >
+          <FileText className="h-4 w-4" /> Transcript CSV
+        </a>
+        <a
           href={`/api/discussions/${report.discussion.id}/reports/overall`}
-          className="btn-primary ml-auto"
+          className="btn-primary"
         >
           <Download className="h-4 w-4" /> Overall PDF
         </a>
@@ -266,6 +274,22 @@ export default async function ReportsPage({ params }: { params: Promise<{ id: st
           );
         })}
       </section>
+
+      {report.recording && (
+        <section className="card">
+          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
+            <Mic className="h-4 w-4" /> Session recording
+            <span className="ml-auto text-xs font-normal normal-case">
+              {formatDuration(report.recording.durationMs)} · {formatBytes(report.recording.byteSize)}
+            </span>
+          </h2>
+          {/* Served from the stored file with range support, so long sessions seek. */}
+          <audio className="mt-3 w-full" controls preload="metadata" src={report.recording.url} />
+          <p className="mt-2 text-xs text-muted">
+            Captured live from the moderator&rsquo;s browser and stored on the server.
+          </p>
+        </section>
+      )}
 
       {report.transcript.length > 0 && (
         <section className="card">

@@ -4,12 +4,16 @@ import { Activity, Crown, MicOff, ShieldAlert, UserMinus, UserPlus, Mic } from "
 import type { RoomParticipant } from "@/components/RoomClient";
 
 /**
- * Host-only live monitor.
+ * Host-only live participation dashboard.
  *
  * Shows, in real time, how much of the talking each participant is doing, who
- * has gone quiet, and lets the host lock a microphone or remove someone. The
- * numbers come from the shared transcript, so they are the same evidence the
- * evaluation will use later — no separate, disagreeing stats source.
+ * has gone quiet, who has the floor right now, how each person has answered the
+ * moderator's invitations, and their live participation score — and lets the
+ * host lock a microphone or remove someone.
+ *
+ * The numbers come from the same stored transcript and audio activity the
+ * moderator itself reads, so the board and the moderator never disagree; no
+ * separate, competing stats source exists.
  */
 
 export type LiveStat = {
@@ -20,6 +24,23 @@ export type LiveStat = {
   wordCount: number;
   lastSpokeAt: string | null;
   silent: boolean;
+  /** Has the floor right now, according to LiveKit audio activity. */
+  speaking: boolean;
+  /** How long they have been in the discussion. */
+  presentMs: number;
+  /** Contributions judged relevant or highly relevant to the topic. */
+  meaningfulContributions: number;
+  averageRelevance: number | null;
+  /** Times the moderator offered them the floor. */
+  invitedCount: number;
+  answeredInvites: number;
+  /** Invitations never taken up. The only outcome that is penalised. */
+  unansweredInvites: number;
+  passCount: number;
+  /** A recent microphone or connection failure excuses their silence. */
+  audioIssue: boolean;
+  /** Live participation score, 0–100; null until the tracker has loaded. */
+  score: number | null;
 };
 
 export type ParticipantAction = "lock-mic" | "unlock-mic" | "remove" | "restore";
@@ -42,11 +63,12 @@ export default function LiveMonitorPanel({
   onControl: (participantId: string, action: ParticipantAction) => void;
 }) {
   const speakers = stats.filter((s) => !s.participant.removed);
+  const currentSpeaker = speakers.find((s) => s.speaking && !s.participant.removed);
 
   return (
     <div className="card">
       <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
-        <Activity className="h-4 w-4" /> Live monitor
+        <Activity className="h-4 w-4" /> Live participation
         {fairnessIndex !== null && (
           <span className="ml-auto text-xs font-normal normal-case">
             balance {(fairnessIndex / 100).toFixed(2)}
@@ -54,8 +76,14 @@ export default function LiveMonitorPanel({
         )}
       </h2>
 
+      <p className="mt-2 text-xs text-muted">
+        {currentSpeaker
+          ? `Speaking now: ${currentSpeaker.participant.name}`
+          : "Nobody has the floor."}
+      </p>
+
       {fairnessIndex !== null && (
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-input">
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-input">
           <div
             className={`h-full rounded-full ${fairnessIndex >= 70 ? "bg-accent" : fairnessIndex >= 40 ? "bg-warn" : "bg-danger"}`}
             style={{ width: `${Math.max(2, Math.min(100, fairnessIndex))}%` }}
@@ -71,11 +99,22 @@ export default function LiveMonitorPanel({
           return (
             <li key={stat.participant.id} className="rounded-lg border border-line bg-panel-2 px-3 py-2">
               <div className="flex items-center gap-2">
+                {stat.speaking && (
+                  <span
+                    className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent"
+                    title="Speaking now"
+                  />
+                )}
                 <span className="truncate text-sm">{stat.participant.name}</span>
                 {stat.participant.isHost && <Crown className="h-3.5 w-3.5 shrink-0 text-accent" />}
                 {locked && (
                   <span className="pill shrink-0" title="Microphone locked by the host">
                     <MicOff className="h-3 w-3" /> locked
+                  </span>
+                )}
+                {stat.audioIssue && (
+                  <span className="pill shrink-0" title="Microphone or connection problem">
+                    audio issue
                   </span>
                 )}
                 {!active && (
@@ -95,11 +134,37 @@ export default function LiveMonitorPanel({
                 />
               </div>
 
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
                 <span>
                   {stat.contributions} contribution{stat.contributions === 1 ? "" : "s"} ·{" "}
                   {stat.wordCount} words
                 </span>
+                <span title="Contributions judged relevant to the topic">
+                  {stat.meaningfulContributions} relevant
+                </span>
+                {stat.averageRelevance !== null && (
+                  <span title="Average relevance of their scored contributions">
+                    relevance {Math.round(stat.averageRelevance)}%
+                  </span>
+                )}
+                {stat.score !== null && (
+                  <span className="ml-auto font-medium text-ink" title="Live participation score">
+                    score {Math.round(stat.score)}
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+                <span title="Times the moderator offered this participant the floor">
+                  invited {stat.invitedCount}
+                </span>
+                <span>answered {stat.answeredInvites}</span>
+                {stat.unansweredInvites > 0 && (
+                  <span className="text-warn" title="Invitations this participant never responded to">
+                    no reply {stat.unansweredInvites}
+                  </span>
+                )}
+                {stat.passCount > 0 && <span>passed {stat.passCount}</span>}
                 <span className="ml-auto">
                   {stat.lastSpokeAt
                     ? `last spoke ${new Date(stat.lastSpokeAt).toLocaleTimeString()}`

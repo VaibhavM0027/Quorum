@@ -46,7 +46,15 @@ export const createDiscussionSchema = z.object({
   mode: z.enum(["FREE_FLOW", "AI_MODERATED"]).default("AI_MODERATED"),
   aiEnabled: z.coerce.boolean().default(true),
   transcriptionEnabled: z.coerce.boolean().default(true),
-  silencePromptSec: z.coerce.number().int().min(10).max(300).default(30),
+  /**
+   * How long the room may stay quiet before the moderator acts. Around six
+   * seconds is the sweet spot: long enough that a thinking pause is never
+   * mistaken for the end of a turn, short enough that a dead room is picked up
+   * before the discussion stalls.
+   */
+  silencePromptSec: z.coerce.number().int().min(4).max(300).default(6),
+  /** How long an invited participant has to respond before the moderator checks in. */
+  inviteResponseSec: z.coerce.number().int().min(5).max(60).default(12),
 });
 
 export const updateDiscussionSchema = z.object({
@@ -62,6 +70,16 @@ export const joinDiscussionSchema = z.object({
     .transform((value) => value.toUpperCase()),
   displayName: z.string().trim().max(80).optional(),
 });
+
+/**
+ * Body of a join request.
+ *
+ * The code may arrive as a query parameter instead of in the body, so both
+ * fields are optional and the route decides where the code comes from. The
+ * shape is still validated: a field that is not a string has to be rejected as
+ * a bad request rather than thrown out of the handler as a server error.
+ */
+export const joinRequestBodySchema = joinDiscussionSchema.partial();
 
 // ---------------------------------------------------------------------------
 // Live transcription
@@ -79,9 +97,53 @@ export const transcriptSegmentSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Live audio activity
+// ---------------------------------------------------------------------------
+
+/**
+ * A browser's report of what it can hear.
+ *
+ * `speaking` is this participant's own microphone; `aiSpeaking` is the
+ * moderator's voice being played back. Both are optional so a heartbeat can
+ * carry whichever changed.
+ */
+export const presenceSchema = z.object({
+  speaking: z.coerce.boolean().optional(),
+  aiSpeaking: z.coerce.boolean().optional(),
+});
+
+// ---------------------------------------------------------------------------
 // Host room controls
 // ---------------------------------------------------------------------------
 
 export const participantControlSchema = z.object({
   action: z.enum(["lock-mic", "unlock-mic", "remove", "restore"]),
 });
+
+// ---------------------------------------------------------------------------
+// Breakout rooms
+// ---------------------------------------------------------------------------
+
+export const MIN_GROUP_SIZE = 2;
+export const MAX_GROUP_SIZE = 30;
+
+/**
+ * Host control over breakout rooms.
+ *
+ * `enable` also carries the group size, because switching rooms on and changing
+ * how big a group should be are the same decision. `move` names the student and
+ * the room they are being put in.
+ */
+export const breakoutControlSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("enable"),
+    groupSize: z.coerce.number().int().min(MIN_GROUP_SIZE).max(MAX_GROUP_SIZE).optional(),
+  }),
+  z.object({ action: z.literal("disable") }),
+  z.object({ action: z.literal("reshuffle") }),
+  z.object({
+    action: z.literal("move"),
+    participantId: z.string().min(1, "A participant is required"),
+    room: z.coerce.number().int().min(1).max(1000),
+  }),
+]);

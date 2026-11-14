@@ -306,7 +306,8 @@ function CreateDiscussionForm({
     durationMin: 30,
     maxParticipants: 8,
     mode: "AI_MODERATED" as "AI_MODERATED" | "FREE_FLOW",
-    silencePromptSec: 30,
+    silencePromptSec: 6,
+    inviteResponseSec: 12,
   });
 
   function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
@@ -450,11 +451,34 @@ function CreateDiscussionForm({
             id="silencePromptSec"
             type="number"
             className="field"
-            min={10}
+            min={4}
             max={300}
             value={form.silencePromptSec}
             onChange={(e) => update("silencePromptSec", Number(e.target.value))}
           />
+          <p className="mt-1 text-xs text-muted">
+            How long the room may stay quiet before the AI acts. Around six seconds keeps a pause
+            for thought from being mistaken for the end of a turn.
+          </p>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="inviteResponseSec">
+            Invitation reply window (seconds)
+          </label>
+          <input
+            id="inviteResponseSec"
+            type="number"
+            className="field"
+            min={5}
+            max={60}
+            value={form.inviteResponseSec}
+            onChange={(e) => update("inviteResponseSec", Number(e.target.value))}
+          />
+          <p className="mt-1 text-xs text-muted">
+            How long an invited participant has to reply before the AI checks in, and then records
+            the invitation as unanswered.
+          </p>
         </div>
       </div>
 

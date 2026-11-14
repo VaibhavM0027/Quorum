@@ -53,6 +53,29 @@ enum ReportKind {
   TRANSCRIPT
 }
 
+enum RecordingStatus {
+  RECORDING // capture is in progress; no file has been stored yet
+  READY // the audio file is stored and playable
+  FAILED // capture ended without a usable file
+}
+
+/**
+ * The life of one invitation the moderator offered to a participant.
+ *
+ * An invitation is how the moderator hands the floor over, so its outcome is
+ * the evidence behind the participation score: did the participant take the
+ * floor, ask to be excused, say nothing, or lose their microphone? Only
+ * `UNANSWERED` carries a penalty.
+ */
+enum InvitationStatus {
+  PENDING // offered; the participant has not been heard from yet
+  ANSWERED // the participant took the floor and spoke
+  PASSED // the participant asked to be excused, which is respected
+  UNANSWERED // the participant never responded, even after a second check
+  TECHNICAL // could not respond because of a microphone or connection problem
+  WITHDRAWN // somebody else took the floor before the invitation was taken up
+}
+
 // ---------------------------------------------------------------------------
 // Identity
 // ---------------------------------------------------------------------------
@@ -107,7 +130,42 @@ model Discussion {
 
   aiEnabled             Boolean @default(true)
   transcriptionEnabled  Boolean @default(true)
-  silencePromptSec      Int     @default(30)
+  /**
+   * How long the room may stay quiet before the moderator acts on it. The
+   * recommended setting is close to six seconds: long enough that a thinking
+   * pause inside a speech is never mistaken for the end of a turn, short
+   * enough that a dead room is picked up before it stalls.
+   */
+  silencePromptSec      Int     @default(6)
+  /**
+   * How long an invited participant is given to respond before the moderator
+   * checks in on them, and then before the invitation is recorded as
+   * unanswered.
+   */
+  inviteResponseSec     Int     @default(12)
+
+  /**
+   * Where the conversation-management engine believes the room is right now
+   * (see `src/lib/conversation.ts`). Stored rather than derived on each client
+   * so every browser in the room shows the same state, and so the decision that
+   * produced it stays auditable.
+   */
+  conversationState     String  @default("IDLE")
+  conversationStateAt   DateTime?
+
+  /**
+   * Last moment the moderator's voice was audible in the room, reported by the
+   * browsers playing it back. Used to keep the moderator silent while it is
+   * already speaking.
+   */
+  lastAiSpokeAt         DateTime?
+
+  /// Breakout rooms split a large room into groups small enough to talk in.
+  /// Off by default: a discussion runs as one room until the host asks for it.
+  breakoutEnabled       Boolean @default(false)
+  /// How many students the host wants in each breakout room. Drives how many
+  /// rooms are needed for the students who are actually present.
+  breakoutGroupSize     Int     @default(8)
 
   startedAt DateTime?
   endedAt   DateTime?
@@ -118,9 +176,11 @@ model Discussion {
   participants DiscussionParticipant[]
   segments     TranscriptSegment[]
   aiEvents     AiEvent[]
+  invitations  Invitation[]
   messages     ChatMessage[]
   evaluations  Evaluation[]
   reports      Report[]
+  recordings   Recording[]
 
   @@index([hostId, status])
   @@index([status, scheduledAt])
@@ -140,14 +200,98 @@ model DiscussionParticipant {
   transcriptionConsent Boolean   @default(false)
   consentAt            DateTime?
   createdAt            DateTime  @default(now())
+  /**
+   * Numbered seat at the discussion table, 1..maxParticipants. It belongs to the
+   * student rather than to their browser session, so a temporary disconnect
+   * reconnects to the same seat. Null once the seat is released (permanent leave
+   * or removal) and for the host, who sits at the head of the table.
+   */
+  seatNumber           Int?
+
+  /**
+   * Breakout room this student is allocated to, 1..N. Null while breakout rooms
+   * are off, and for the host, who moderates from the main room.
+   */
+  breakoutRoom         Int?
+
+  // -- Live audio activity, reported from LiveKit -------------------------
+  /**
+   * Last moment this participant's own audio track carried speech. LiveKit's
+   * audio-activity events drive this, not the transcript: a browser knows
+   * somebody has the floor seconds before the recogniser commits their
+   * sentence, and the moderator must never talk over them in that gap.
+   */
+  lastAudioAt          DateTime?
+  /**
+   * Set at the moment this participant took the floor and cleared when they
+   * stop. Non-null (with a fresh `lastAudioAt`) is what "currently speaking"
+   * means to the conversation engine.
+   */
+  speakingSince        DateTime?
+
+  // -- Invitation record ---------------------------------------------------
+  /// Times the moderator has offered this participant the floor.
+  invitedCount         Int @default(0)
+  /// Invitations this participant took up.
+  answeredInviteCount  Int @default(0)
+  /// Invitations this participant never responded to. The only penalised outcome.
+  unansweredInviteCount Int @default(0)
+  /// Times this participant asked to be excused. Respected, never penalised.
+  passCount            Int @default(0)
+  lastInvitedAt        DateTime?
+  /**
+   * Set when this participant's microphone or connection fails. A participant
+   * with a recent technical issue is never penalised for missing an invitation,
+   * and is left out of invitations until their audio comes back.
+   */
+  audioIssueAt         DateTime?
 
   discussion Discussion          @relation(fields: [discussionId], references: [id], onDelete: Cascade)
   user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   segments   TranscriptSegment[]
   evaluation Evaluation?
+  recordings Recording[]
+  invitations Invitation[]
 
   @@unique([discussionId, userId])
+  // One student per seat. Postgres allows many rows with a null seat, which is
+  // exactly what a released seat and the moderator position need.
+  @@unique([discussionId, seatNumber])
   @@index([discussionId])
+}
+
+/**
+ * One invitation the moderator offered to a participant.
+ *
+ * The row is the moderator's short-term memory: it records who was asked, when,
+ * and by when they were expected to answer, so a later tick can decide whether
+ * the participant responded, asked to pass, or ignored the invitation — instead
+ * of asking the same person again.
+ */
+model Invitation {
+  id            String @id @default(cuid())
+  discussionId  String
+  participantId String
+  /// The `NUDGE` event that was spoken when the floor was offered.
+  aiEventId     String?
+
+  status      InvitationStatus @default(PENDING)
+  invitedAt   DateTime         @default(now())
+  /// When the response window closes. Extended once by the follow-up check.
+  respondByAt DateTime
+  /// How many times the moderator has asked, including the initial offer.
+  prompts     Int              @default(1)
+  respondedAt DateTime?
+  /// The transcript segment that proved the participant's response, if any.
+  responseSegmentId String?
+
+  createdAt DateTime @default(now())
+
+  discussion  Discussion            @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@index([discussionId, status])
+  @@index([participantId])
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +334,14 @@ model AiEvent {
   kind         AiEventKind
   message      String
   source       String      @default("gemini")
+  /**
+   * When the assistant has told the room that it is about to act, the moment
+   * that action becomes due. The room counts down to it on screen, so everyone
+   * sees the same timer. Null once the action has been taken, was withdrawn
+   * because somebody started speaking again, or when the event schedules
+   * nothing at all.
+   */
+  dueAt        DateTime?
   createdAt    DateTime    @default(now())
 
   discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
@@ -264,4 +416,47 @@ model Report {
   discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
 
   @@index([discussionId, kind])
+}
+
+// ---------------------------------------------------------------------------
+// Session recordings
+// ---------------------------------------------------------------------------
+
+/**
+ * One stored audio recording of a discussion.
+ *
+ * The audio itself lives in the recording store on disk (see
+ * `src/lib/recordings.ts`); this row is the durable record of what was
+ * captured, who captured it and where the file is. Keeping the bytes out of
+ * Postgres keeps the database small and lets the file be streamed straight to
+ * the browser with range requests.
+ */
+model Recording {
+  id           String @id @default(cuid())
+  discussionId String
+  /**
+   * The participant whose browser captured the room mix. A recording is made
+   * from one client so the room produces a single file rather than one clip per
+   * student. Nulled if that participant's membership is later deleted.
+   */
+  capturedByParticipantId String?
+
+  status     RecordingStatus @default(RECORDING)
+  /// Path of the audio file relative to the recording store root.
+  storageKey String?
+  mimeType   String @default("audio/webm")
+  byteSize   Int    @default(0)
+  durationMs Int    @default(0)
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+  /// Why the capture failed, when `status` is FAILED.
+  error     String    @default("")
+
+  createdAt DateTime @default(now())
+
+  discussion Discussion             @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  capturedBy DiscussionParticipant? @relation(fields: [capturedByParticipantId], references: [id], onDelete: SetNull)
+
+  @@index([discussionId, startedAt])
 }

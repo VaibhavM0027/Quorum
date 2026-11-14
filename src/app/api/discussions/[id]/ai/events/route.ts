@@ -58,6 +58,10 @@ export async function GET(request: Request, { params }: Params) {
         source: event.source,
         participantId: event.participantId,
         participantName: event.participantId ? names.get(event.participantId) ?? null : null,
+        // Set when the assistant has announced an action it is about to take.
+        // The room counts down to this moment, so every browser shows the same
+        // timer without having to agree on the current time.
+        dueAt: event.dueAt ? event.dueAt.toISOString() : null,
         createdAt: event.createdAt.toISOString(),
       })),
     });

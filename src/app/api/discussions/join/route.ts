@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
-import { JOINABLE_STATUSES, previewByJoinCode } from "@/lib/discussions";
+import { JOINABLE_STATUSES, assignBreakoutRooms, assignSeat, previewByJoinCode } from "@/lib/discussions";
 import { checkRateLimit, clientKey } from "@/lib/rate-limit";
 import { fail, handleRouteError, ok } from "@/lib/http";
+import { joinRequestBodySchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,22 +49,17 @@ export async function POST(request: Request) {
 
     const code = new URL(request.url).searchParams.get("code")?.trim().toUpperCase();
 
-    // The body is optional — accept the code from a query string as well.
-    let bodyCode = code;
-    let displayName: string | undefined;
-    if (!bodyCode) {
-      const body = (await request.json().catch(() => ({}))) as {
-        code?: string;
-        displayName?: string;
-      };
-      bodyCode = body.code?.trim().toUpperCase();
-      displayName = body.displayName?.trim() || undefined;
-    }
+    // The body is optional — the code may arrive as a query parameter instead.
+    // It is still validated rather than trusted: reading `body.code.trim()` off
+    // an unchecked cast used to throw out of the handler and surface as a 500.
+    const body = joinRequestBodySchema.parse(await request.json().catch(() => ({})));
+    const joinCode = code ?? body.code;
+    const displayName = body.displayName;
 
-    if (!bodyCode) return fail("A join code is required.", 400);
+    if (!joinCode) return fail("A join code is required.", 400);
 
     const discussion = await prisma.discussion.findUnique({
-      where: { joinCode: bodyCode },
+      where: { joinCode },
       include: { _count: { select: { participants: true } } },
     });
     if (!discussion) return fail("No discussion matches that code.", 404);
@@ -87,7 +83,19 @@ export async function POST(request: Request) {
         where: { id: existing.id },
         data: { leftAt: null, joinedAt: existing.joinedAt ?? new Date() },
       });
-      return ok({ discussionId: discussion.id, participantId: updated.id, alreadyMember: true });
+      // A student who only lost their connection keeps the seat they already
+      // have; someone who left deliberately (and so gave it up) is seated again.
+      const seatNumber =
+        updated.seatNumber ?? (await assignSeat(discussion.id, updated.id, discussion.maxParticipants));
+      // Someone arriving after the groups were set goes into the emptiest one
+      // rather than disturbing a group that is already talking.
+      if (discussion.breakoutEnabled) await assignBreakoutRooms(discussion.id);
+      return ok({
+        discussionId: discussion.id,
+        participantId: updated.id,
+        seatNumber,
+        alreadyMember: true,
+      });
     }
 
     if (discussion._count.participants >= discussion.maxParticipants) {
@@ -104,7 +112,15 @@ export async function POST(request: Request) {
       },
     });
 
-    return ok({ discussionId: discussion.id, participantId: participant.id, alreadyMember: false }, 201);
+    // Every student gets exactly one numbered seat when they join. The seat is
+    // stored, so reconnecting later returns them to the same chair.
+    const seatNumber = await assignSeat(discussion.id, participant.id, discussion.maxParticipants);
+    if (discussion.breakoutEnabled) await assignBreakoutRooms(discussion.id);
+
+    return ok(
+      { discussionId: discussion.id, participantId: participant.id, seatNumber, alreadyMember: false },
+      201,
+    );
   } catch (error) {
     return handleRouteError(error);
   }
