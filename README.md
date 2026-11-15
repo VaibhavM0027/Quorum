@@ -16,7 +16,7 @@ reports.
 | Hosting a GD | Create a discussion (title, topic, context, rules, duration, mode), get a human-friendly join code and an invite link. Start, end, cancel or reopen the room. |
 | Joining | Participants join with a code or invite link, give transcription consent, and are admitted until the room is full. |
 | Live media | Real audio/video via LiveKit (SFU). Hosts can lock a participant's mic or remove them mid-session. |
-| Transcription | A server-side LiveKit agent joins every live room and transcribes each participant's microphone track independently, so every speaker's words are captured under their own name — not only the one whose laptop started the discussion. |
+| Transcription | Each participant's browser captures their own microphone in short chunks. Quorum sends clips to Gemini from the server, where the configured API key remains private; speaker attribution comes from the authenticated LiveKit identity. |
 | AI assistant | A live relevance score per contribution, plus AI-generated silence prompts, quiet-participant nudges and off-topic reminders. Every assistant message is stored and auditable — nothing is faked. |
 | Evaluation | Host-triggered evaluation scores six weighted rubric dimensions per participant, grounded in the transcript. The overall score is always computed server-side. |
 | Reports | In-app report page plus downloadable PDFs: an individual report per participant and one whole-room (overall) report. |
@@ -28,25 +28,31 @@ reports.
 ```
 Browser (desktop & mobile)
  ├─ Next.js App Router UI (React 19, Tailwind)
- └─ LiveKit client  ──►  LiveKit SFU  (publishes its own microphone)
-
-Transcription agent (separate Node process — `npm run agent`)
- └─ LiveKit Agents worker  ──►  subscribes to every participant's microphone
-     └─ one transcriber per track  ──►  Gemini speech-to-text  ──►  Prisma
+ ├─ MediaRecorder + Web Audio  ──►  POST /api/discussions/:id/transcript (audio chunk)
+ └─ LiveKit client  ──►  LiveKit SFU  (audio/video)
 
 Next.js server (Node runtime)
  ├─ REST route handlers  (auth, discussions, transcript, AI, reports)
  ├─ Prisma  ──►  PostgreSQL
- ├─ Gemini client  (relevance scoring, moderation, evaluation)
+ ├─ LiveKit RoomServiceClient  ──►  reliable transcript-update notifications
+ ├─ Gemini client  (audio transcription, relevance, moderation, evaluation)
  └─ PDFKit  (report rendering)
 ```
 
 Key design decisions:
 
-- **Speaker attribution is exact** because every microphone is transcribed from
-  its own LiveKit track, so a stored segment is always attached to the
-  participant the audio came from — there is no server-side diarisation to get
-  wrong, and no shared stream to attribute by guesswork.
+- **Speaker attribution is exact** because each browser captures its own
+  microphone and the server maps the authenticated user to their LiveKit
+  identity — there is no cross-speaker diarisation to guess.
+- **The database is the shared transcript source.** Each accepted chunk is stored
+  against the authenticated participant (the same user ID used as their LiveKit
+  identity), then LiveKit notifies active room clients to reload it. Periodic
+  polling recovers updates missed during a disconnect or reconnect, and queued
+  submissions retry after temporary network or LiveKit reconnects.
+- **Audio is sent to Gemini server-side.** Only consented, active microphone
+  chunks are sent to the configured Gemini model; raw chunks are not stored by
+  the transcription endpoint. The separate session recording feature remains
+  unchanged.
 - **Scores are reproducible.** Statistics (speaking time, contributions, words,
   relevance verdicts) come from stored data; the AI only supplies rubric scores
   and rationale, and the weighted overall score is calculated on the server.
@@ -66,7 +72,7 @@ Key design decisions:
 - **Auth:** `jose` (HS256 JWT sessions) + `bcryptjs` password hashing
 - **Real-time media:** LiveKit (`livekit-server-sdk` server-side, `livekit-client` in the browser)
 - **AI:** Google Gemini (server-side only, key never reaches the browser)
-- **Transcription:** LiveKit Agents worker (server-side) + Gemini speech-to-text
+- **Transcription:** Gemini audio understanding, called by the server
 - **Reports:** PDFKit, Recharts (charts on the report page)
 - **Tests:** Vitest
 
@@ -78,10 +84,8 @@ Key design decisions:
 - **PostgreSQL 14+**
 - **A LiveKit server** — either the local dev server (`livekit-server --dev`)
   or LiveKit Cloud
-- **A Gemini API key** (optional for AI features, but required for transcription —
-  speech-to-text runs on the server)
-- Any modern browser: the transcript is produced server-side, so it does not
-  depend on a browser speech recogniser
+- **A Gemini API key** (optional; transcription and AI features require it)
+- A modern browser with `MediaRecorder` and Web Audio support for transcription
 
 ---
 
@@ -110,7 +114,7 @@ Then edit `.env`. The essentials:
 | `APP_URL` | Public URL of the app, used to build invite links. |
 | `LIVEKIT_HOST` / `LIVEKIT_URL` | LiveKit server addresses (see 5.4). |
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | LiveKit credentials. |
-| `GEMINI_API_KEY` / `GEMINI_FLASH_API_KEY` | Gemini API key(s). Leave blank to run without AI. |
+| `GEMINI_API_KEY` / `GEMINI_FLASH_API_KEY` | Gemini API key(s). Required for audio transcription and Gemini AI features. |
 
 No credential is ever hardcoded; everything is read through `src/lib/env.ts`,
 which validates the environment at startup and fails loudly if something
@@ -155,24 +159,11 @@ accounts, or you can just register normally.
 npm run dev      # http://localhost:4000
 ```
 
-Transcription is a separate process. Start the agent in a second terminal — a
-room is perfectly audible without it, but no transcript is produced:
-
-```powershell
-npm run agent    # joins every live discussion room and transcribes each microphone
-```
-
-The agent reads `LIVEKIT_URL` (derived from `LIVEKIT_HOST` when blank),
-`LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `GEMINI_API_KEY` and `DATABASE_URL` from
-the same `.env`, so it needs no configuration of its own. Set `TRANSCRIPT_DEBUG=1`
-to trace participant connection, subscribed tracks, audio frames, every
-speech-to-text call and every stored segment.
-
 Production build:
 
 ```powershell
 npm run build
-npm run start    # the agent is not part of this process — see §9
+npm run start
 ```
 
 Check `GET /api/health` to see whether the database, LiveKit and AI are
@@ -188,6 +179,13 @@ configured.
 3. **Host:** start the discussion. Talk normally; the AI assistant observes.
 4. **Evaluation:** the host runs the evaluation from the report page (or it can
    run once the discussion is live/finished).
+
+For a multi-device transcription check, join with a host and at least two
+participants on separate devices using a modern browser. Each participant should
+consent and enable their microphone; speak in turn and briefly overlap. Confirm
+that each line is labelled with the correct participant and appears on the other
+devices, then disconnect and reconnect one participant and confirm new lines
+continue to appear. The same stored transcript feeds individual AI evaluations.
 5. **Reports:** open `/reports/<discussionId>` and download the overall PDF or a
    per-participant PDF.
 
@@ -249,14 +247,12 @@ A self-contained stack is provided in `docker-compose.yml`:
 
 ```powershell
 $env:JWT_SECRET="a-long-random-secret-at-least-32-characters"
-$env:GEMINI_API_KEY="your-key"   # needed for AI features and for transcription
+$env:GEMINI_API_KEY="your-key"   # optional
 docker compose up --build
 ```
 
 Then open http://localhost:4000. The `app` container applies the schema on boot
-(`prisma db push`) and serves on port 4000; the `agent` container runs the
-transcription worker against the same Postgres and the same LiveKit server;
-Postgres and LiveKit run alongside them.
+(`prisma db push`) and serves on port 4000; Postgres and LiveKit run alongside it.
 
 > The Compose file and Dockerfile are provided for convenience and have not been
 > executed in the authoring environment — review the environment values before
@@ -270,12 +266,6 @@ Postgres and LiveKit run alongside them.
 3. Set the LiveKit variables. For LiveKit Cloud, set `LIVEKIT_URL` to the `wss://`
    URL so the CSP in `next.config.mjs` allows it.
 4. `npm ci && npx prisma db push && npm run build && npm run start`.
-5. Deploy the transcription agent as its **own long-lived process** on the same
-   image: `npm run agent`, with the same `DATABASE_URL`, `LIVEKIT_URL`,
-   `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` and `GEMINI_API_KEY`. It must not be
-   run inside the web process — an agent holds a room connection for the whole
-   discussion, and it would also be scaled or restarted with the web tier. On
-   Render, `render.yaml` already declares it as the `quorum-transcriber` worker.
 
 Notes:
 
@@ -292,9 +282,8 @@ Notes:
 
 | Service | Purpose | Pricing consideration | Free alternative |
 | --- | --- | --- | --- |
-| **Google Gemini** | Relevance scoring, live moderation, rubric evaluation | Free tier is rate-limited; paid tier bills per token. Keep `GEMINI_CONCURRENCY` low on free keys. `AI_MAX_CALLS_PER_ROOM` caps spend per room. | Self-host an open model (e.g. via Ollama) and adapt `src/lib/gemini.ts`. Without a key, AI features are disabled and the UI says so. |
+| **Google Gemini** | Audio transcription, relevance scoring, live moderation, rubric evaluation | Free tier is rate-limited; paid tier bills per token and audio volume. Transcript audio requests are rate-limited per participant and room. | Self-host an open model and adapt `src/lib/gemini.ts`. Without a key, transcription and AI features are unavailable. |
 | **LiveKit** | Real-time audio/video | LiveKit Cloud is usage-based (participant-minutes). | The self-hosted `livekit-server` is free; use `--dev` locally or deploy the OSS server in production. |
-| **Gemini speech-to-text** | Transcribing every participant's microphone | The worker sends one clip per finished utterance, so cost tracks how much is said rather than how many people are in the room. | The provider is isolated in `src/lib/stt.ts`, so another recogniser can be dropped in — there is no browser-side fallback. |
 
 Gemini is only ever called server-side. If no key is configured, the app does not
 pretend AI is working: `/api/health` reports it as unconfigured, and AI-dependent
@@ -304,13 +293,9 @@ actions return a clear message instead of a fake result.
 
 ## 11. Known limitations
 
-- **Transcription needs the agent running.** It is a separate process (§5.6, §9);
-  without it the room still works but nothing is transcribed. Recognition quality
-  depends on the model, so heavy crosstalk or very quiet speech can come out
-  imperfectly.
-- **The agent joins rooms on demand.** The worker must be registered with the
-  LiveKit server to be dispatched, and it only transcribes discussions that are
-  live and have transcription enabled.
+- **Transcription** uses short Gemini audio requests, not a continuous streaming
+  ASR session. Expect chunk-level latency; use a dedicated streaming speech-to-text
+  service if sub-second interim captions are required.
 - **Rate limiting** is per-process (see §8).
 - **No migrations directory** — the schema is applied with `prisma db push`. For
   a production deployment with change history, switch to `prisma migrate`.
@@ -330,8 +315,7 @@ src/
     room/[id]/      Live room
     reports/[id]/   Report page (HTML) + PDF downloads
   components/       Reusable UI (room, dashboard, join, charts, controls)
-  agent/            LiveKit transcription worker: worker, participant-session, utterance
-  hooks/            useLivekitRoom, usePresenceReporter, useRoomRecorder, useAssistantVoice
+  hooks/            useLivekitRoom, useGeminiTranscription
   lib/              env, auth, prisma, gemini, ai-assistant, evaluation, rubric,
                     reports, pdf, livekit, transcript, rate-limit, validation, http
 prisma/             schema.prisma, seed.ts

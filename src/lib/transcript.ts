@@ -1,16 +1,18 @@
 /**
  * Transcript helpers.
  *
- * Live transcription is produced by the transcription agent, which subscribes to
- * every participant's microphone and reads each track on its own. A speaker is
- * therefore always known from the track the words arrived on, never guessed from
- * the audio.
+ * Each participant's browser captures their own microphone audio and sends
+ * short clips to the server for Gemini transcription, so speaker attribution
+ * is tied to the authenticated participant rather than inferred from audio.
  */
 
 /** Collapses whitespace and trims a spoken chunk. */
 export function normalizeTranscript(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
+
+/** LiveKit topic used to invalidate room transcript views after a committed segment. */
+export const TRANSCRIPT_UPDATE_TOPIC = "quorum.transcript.updated";
 
 /** Counts words in a transcript chunk. */
 export function countWords(text: string): number {
@@ -27,12 +29,9 @@ export function isMeaningful(text: string): boolean {
 export const MIN_SEGMENT_WORDS = 1;
 
 /**
- * The same words can reach the store twice: a recognition pass that has to
- * restart, or a track the agent re-attaches to around a mute or a reconnect, can
- * redeliver the tail of an utterance it had already finished. Storing it twice
- * would double-count the participant's speaking time and skew the AI's reading
- * of the discussion, so an identical chunk arriving this soon after the previous
- * one is treated as the same utterance.
+ * A client may retry a chunk after a network hiccup. Storing the same text and
+ * start time twice would skew participant statistics, so a nearby duplicate is
+ * treated as the same utterance.
  */
 export const DUPLICATE_WINDOW_MS = 5000;
 

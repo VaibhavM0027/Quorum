@@ -3,11 +3,10 @@
 #
 # Deploy: Render Dashboard -> New -> Blueprint -> select this repository.
 #
-# Render will create the Postgres database, the web service and the
-# transcription agent (a background worker), wire DATABASE_URL automatically,
-# and generate JWT_SECRET. The LiveKit and Gemini values are secrets, so they
-# use `sync: false`: Render prompts for them in the Dashboard on the first
-# deploy and never stores them in this file.
+# Render will create the Postgres database and the web service, wire
+# DATABASE_URL automatically, and generate JWT_SECRET. The LiveKit and Gemini
+# values are secrets, so they use `sync: false`: Render prompts for them in the
+# Dashboard on the first deploy and never stores them in this file.
 #
 # Two things are deliberately absent:
 #   PORT    - Render injects it, and the Dockerfile CMD already honours it.
@@ -89,68 +88,6 @@ services:
       # Largest single recording accepted, in MB.
       - key: RECORDING_MAX_MB
         value: "200"
-
-  # The transcription agent: one long-lived process that joins every live
-  # discussion room, subscribes to each participant's microphone and writes a
-  # transcript per participant. It runs the same image as the web service but
-  # overrides the command, and it has to exist separately because an agent must
-  # stay connected for the whole discussion — a Next.js request handler cannot
-  # hold that connection, and a spun-down web instance would drop it.
-  - type: worker
-    name: quorum-transcriber
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    # Runs `node --import tsx src/agent/worker.ts start` (see package.json).
-    # The TypeScript loader has to be on the worker's own command line: the
-    # agents framework forks each job as a plain Node child and imports the
-    # agent file it is given.
-    dockerCommand: npm run agent
-    region: singapore
-    # Render's free tier covers web services and databases, not background
-    # workers; `starter` is the smallest paid instance. The agent is idle-light
-    # between utterances, so the smallest instance is the right size.
-    plan: starter
-    envVars:
-      # --- provisioned automatically ---
-      - key: DATABASE_URL
-        fromDatabase:
-          name: quorum-db
-          property: connectionString
-
-      # The shared configuration validator (src/lib/env.ts) requires a JWT
-      # secret of this length even though the worker never signs a session, so
-      # it needs a value of its own. Nothing the browser holds is verified here.
-      - key: JWT_SECRET
-        generateValue: true
-
-      # --- secrets: prompted on first deploy ---
-      # Paste the same values you gave the web service; both processes talk to
-      # the same LiveKit server and the same Gemini key.
-      - key: LIVEKIT_URL # wss://<project>.livekit.cloud
-        sync: false
-      - key: LIVEKIT_HOST # https://<project>.livekit.cloud
-        sync: false
-      - key: LIVEKIT_API_KEY
-        sync: false
-      - key: LIVEKIT_API_SECRET
-        sync: false
-      - key: GEMINI_API_KEY
-        sync: false
-
-      # --- behaviour ---
-      - key: AI_ENABLED
-        value: "on"
-      - key: GEMINI_FAST_MODEL
-        value: gemini-flash-lite-latest
-      - key: GEMINI_SMART_MODEL
-        value: gemini-3.6-flash
-      # Capture -> speech-to-text -> database traces for every participant, not
-      # just the one whose laptop started the discussion.
-      - key: TRANSCRIPT_DEBUG
-        value: "1"
-      # Agent framework logging: trace | debug | info | warn | error | fatal.
-      - key: LOG_LEVEL
-        value: info
 
 ##############################################################################
 # Session recordings live on disk, and a container filesystem is discarded on

@@ -10,8 +10,8 @@ import { useEffect, useRef, useState } from "react";
  * the room, including its own microphone. Those tracks are summed through a Web
  * Audio graph into one stream, which `MediaRecorder` encodes. The result is one
  * file per session rather than one clip per student, with no extra media server:
- * the audio never leaves the participants' browsers except as the finished
- * recording.
+ * the finished mix is uploaded once, after the discussion. Browser speech
+ * recognition may separately use its own remote service.
  *
  * Capture follows the live discussion. It starts when the discussion goes live,
  * stops when the discussion ends, and the finished file is uploaded once, to the

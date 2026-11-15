@@ -5,6 +5,8 @@ import {
   joinRequestBodySchema,
   loginSchema,
   registerSchema,
+  transcriptAudioMetadataSchema,
+  transcriptSegmentSchema,
 } from "@/lib/validation";
 
 describe("validation schemas", () => {
@@ -81,6 +83,52 @@ describe("validation schemas", () => {
     it("rejects an out-of-range duration", () => {
       expect(() =>
         createDiscussionSchema.parse({ title: "GD One", topic: "Topic here", durationMin: 500 }),
+      ).toThrow();
+    });
+  });
+
+  describe("transcriptSegmentSchema", () => {
+    it("coerces ISO strings into dates and defaults the duration", () => {
+      const parsed = transcriptSegmentSchema.parse({
+        text: "hello world",
+        startedAt: "2026-01-01T10:00:00.000Z",
+        endedAt: "2026-01-01T10:00:05.000Z",
+      });
+      expect(parsed.startedAt).toBeInstanceOf(Date);
+      expect(parsed.durationMs).toBe(0);
+    });
+
+    it("rejects an empty transcript chunk", () => {
+      expect(() =>
+        transcriptSegmentSchema.parse({
+          text: "   ",
+          startedAt: new Date(),
+          endedAt: new Date(),
+        }),
+      ).toThrow();
+    });
+  });
+
+  describe("transcriptAudioMetadataSchema", () => {
+    it("validates chunk timestamps, duration and optional language", () => {
+      const parsed = transcriptAudioMetadataSchema.parse({
+        startedAt: "2026-01-01T10:00:00.000Z",
+        endedAt: "2026-01-01T10:00:06.000Z",
+        durationMs: "2400",
+        language: "en-IN",
+      });
+      expect(parsed.startedAt).toBeInstanceOf(Date);
+      expect(parsed.durationMs).toBe(2400);
+      expect(parsed.language).toBe("en-IN");
+    });
+
+    it("rejects a chunk duration outside the recorder's maximum", () => {
+      expect(() =>
+        transcriptAudioMetadataSchema.parse({
+          startedAt: new Date(),
+          endedAt: new Date(),
+          durationMs: 10_001,
+        }),
       ).toThrow();
     });
   });

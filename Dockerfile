@@ -57,12 +57,6 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/next.config.mjs ./next.config.mjs
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
-# The transcription agent (src/agent) is not part of the Next.js build — it runs
-# as its own worker process, which is what render.yaml points at this same image
-# with an overridden command. It needs its sources and the path alias from
-# tsconfig.json, and tsx (a dependency of the image) to run them, because a
-# LiveKit agent has to be started with a TypeScript loader on its command line.
-COPY --from=builder /app/src ./src
 
 USER nextjs
 EXPOSE 4000

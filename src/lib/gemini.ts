@@ -46,18 +46,11 @@ type GeminiPayload = {
 export type GeminiCallOptions = {
   prompt: string;
   system?: string;
+  audio?: { mimeType: string; data: string };
   /** "fast" uses GEMINI_FAST_MODEL, "smart" uses GEMINI_SMART_MODEL. */
   tier?: "fast" | "smart";
   /** Ask the model to reply with parseable JSON. */
   json?: boolean;
-  /**
-   * A short audio clip sent inline alongside the prompt, as base64.
-   *
-   * Used for speech to text: the transcription agent sends each finished
-   * utterance here as uncompressed WAV, which is a container the model accepts
-   * without a codec.
-   */
-  audio?: { mimeType: string; base64: string };
   temperature?: number;
   maxOutputTokens?: number;
   timeoutMs?: number;
@@ -81,6 +74,18 @@ async function requestOnce(model: string, options: GeminiCallOptions): Promise<s
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 25_000);
 
   try {
+    const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [
+      { text: options.prompt },
+    ];
+    if (options.audio) {
+      parts.push({
+        inlineData: {
+          mimeType: options.audio.mimeType,
+          data: options.audio.data,
+        },
+      });
+    }
+
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -88,18 +93,7 @@ async function requestOnce(model: string, options: GeminiCallOptions): Promise<s
         "x-goog-api-key": env.geminiKey,
       },
       body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              // Audio first, then the instruction that talks about it.
-              ...(options.audio
-                ? [{ inlineData: { mimeType: options.audio.mimeType, data: options.audio.base64 } }]
-                : []),
-              { text: options.prompt },
-            ],
-          },
-        ],
+        contents: [{ role: "user", parts }],
         ...(options.system ? { systemInstruction: { parts: [{ text: options.system }] } } : {}),
         generationConfig: {
           temperature: options.temperature ?? 0.4,
@@ -142,9 +136,7 @@ async function requestOnce(model: string, options: GeminiCallOptions): Promise<s
  * Calls Gemini, retrying transient failures and falling back across models.
  * Returns the concatenated text of the first successful candidate.
  */
-export async function callGemini(options: GeminiCallOptions): Promise<string> {
-  if (!geminiAvailable()) throw new AiUnavailableError();
-
+async function callGeminiWithConfiguredKey(options: GeminiCallOptions): Promise<string> {
   const models = modelChain(options.tier ?? "fast");
   let lastError: unknown = null;
 
@@ -169,6 +161,46 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
   throw lastError instanceof Error
     ? lastError
     : new AiRequestError("Gemini request failed on every configured model.");
+}
+
+export async function callGemini(options: GeminiCallOptions): Promise<string> {
+  if (!geminiAvailable()) throw new AiUnavailableError();
+  return callGeminiWithConfiguredKey(options);
+}
+
+/**
+ * Transcribes one short participant audio chunk through Gemini.
+ * The API key remains on the server; audio is sent as inline data.
+ */
+export async function transcribeAudioWithGemini(input: {
+  audioBase64: string;
+  mimeType: string;
+  language?: string;
+}): Promise<string> {
+  if (!env.geminiKey) {
+    throw new AiUnavailableError("Gemini transcription requires GEMINI_API_KEY.");
+  }
+
+  const languageInstruction = input.language
+    ? `The expected spoken language is ${input.language}.`
+    : "Preserve the spoken language; do not translate.";
+
+  const transcript = await callGeminiWithConfiguredKey({
+    prompt: [
+      "Transcribe the speech in the attached audio verbatim.",
+      languageInstruction,
+      "Do not summarize, add speaker labels, or describe background sounds.",
+      "If there is no intelligible speech, return exactly [NO_SPEECH].",
+      "Return only the transcript text.",
+    ].join(" "),
+    audio: { mimeType: input.mimeType, data: input.audioBase64 },
+    tier: "fast",
+    temperature: 0,
+    maxOutputTokens: 1024,
+    timeoutMs: 30_000,
+  });
+
+  return transcript === "[NO_SPEECH]" ? "" : transcript;
 }
 
 /**

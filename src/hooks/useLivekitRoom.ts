@@ -9,6 +9,7 @@ import type {
   Room as LKRoom,
 } from "livekit-client";
 import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
+import { TRANSCRIPT_UPDATE_TOPIC } from "@/lib/transcript";
 
 /**
  * LiveKit connection for a single discussion room.
@@ -100,8 +101,11 @@ export function useLivekitRoom(
   discussionId: string,
   breakoutRoom: number | null,
   shouldConnect: boolean,
+  onTranscriptUpdate?: () => void,
 ) {
   const roomRef = useRef<LKRoom | null>(null);
+  const onTranscriptUpdateRef = useRef(onTranscriptUpdate);
+  onTranscriptUpdateRef.current = onTranscriptUpdate;
   const [status, setStatus] = useState<LivekitStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [tiles, setTiles] = useState<TileInfo[]>([]);
@@ -240,6 +244,11 @@ export function useLivekitRoom(
           .on(lk.RoomEvent.LocalTrackPublished, onLocalTrackPublished)
           .on(lk.RoomEvent.LocalTrackUnpublished, onChange)
           .on(lk.RoomEvent.ActiveSpeakersChanged, onChange)
+          .on(lk.RoomEvent.DataReceived, (_payload, _participant, _kind, topic) => {
+            if (topic === TRANSCRIPT_UPDATE_TOPIC) {
+              onTranscriptUpdateRef.current?.();
+            }
+          })
           .on(lk.RoomEvent.Reconnecting, () => setStatus("reconnecting"))
           .on(lk.RoomEvent.Reconnected, () => {
             setStatus("connected");
@@ -317,7 +326,7 @@ export function useLivekitRoom(
    * single audio packet leaves the browser) *and* the capture device is released.
    * Muting alone would leave `MediaStreamTrack.enabled = false` capturing, which
    * is why the browser keeps showing its recording indicator and why anything
-   * else reading the microphone — a local recorder, say — keeps hearing the
+   * reading the microphone — such as the audio chunk recorder — keeps hearing the
    * room. Releasing the device is what makes "microphone off" true rather than a
    * label. Switching it back on republishes through LiveKit's normal path.
    *
@@ -350,15 +359,6 @@ export function useLivekitRoom(
           }
         }
         micWantedRef.current = enabled;
-        if (enabled) {
-          // `setMicrophoneEnabled` is what asks the browser for the device and
-          // creates the track, so a successful call is the whole of "permission
-          // granted" and "local audio track created".
-          transcriptLog("microphone permission granted", { device: publication?.track?.mediaStreamTrack.label ?? null });
-          transcriptLog("local audio track created", {
-            device: publication?.track?.mediaStreamTrack.label ?? null,
-          });
-        }
         transcriptLog(enabled ? "local microphone published" : "local microphone released", {
           sid: publication?.trackSid ?? null,
         });

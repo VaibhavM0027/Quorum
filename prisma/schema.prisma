@@ -314,20 +314,6 @@ model TranscriptSegment {
   discussionId  String
   participantId String
 
-  /**
-   * Where the audio was captured, as LiveKit names it. It is the room the
-   * speaker was actually in, which is `discussion-<id>` in the main room and
-   * `discussion-<id>-room-<n>` inside a breakout group — so a stored segment
-   * still says which group the speaker was sitting in.
-   *
-   * Empty for segments stored before the agent worker existed.
-   */
-  roomId              String @default("")
-  /** LiveKit identity of the speaker, i.e. the account id they joined with. */
-  participantIdentity String @default("")
-  /** LiveKit SID of the single participant's audio track the words came from. */
-  trackId             String @default("")
-
   text       String
   startedAt  DateTime
   endedAt    DateTime

@@ -25,13 +25,13 @@ export function usePresenceReporter(params: {
   /** The moderator's voice is being played back in this browser right now. */
   aiSpeaking: boolean;
   /**
-   * This browser's microphone is being captured for transcription right now.
+   * This browser is capturing microphone audio for Gemini transcription.
    *
    * It is reported separately from `speaking` because the two answer different
    * questions: audio activity says somebody is audible, whereas this says their
-   * words are actually reaching the transcript. The capture happens in the
-   * transcription agent, which cannot report it, so the browser reports the
-   * condition the agent needs — a live, consented, unmuted microphone.
+   * audio is being captured for transcription. A participant with a live
+   * microphone whose browser cannot record audio is audible and still produces
+   * nothing, and only this flag tells the room which of the two is happening.
    */
   transcribing: boolean;
 }) {

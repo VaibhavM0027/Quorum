@@ -89,6 +89,20 @@ export const consentSchema = z.object({
   consent: z.coerce.boolean(),
 });
 
+export const transcriptSegmentSchema = z.object({
+  text: z.string().trim().min(1, "Transcript chunk is empty").max(2000),
+  startedAt: z.coerce.date(),
+  endedAt: z.coerce.date(),
+  durationMs: z.coerce.number().int().min(0).max(600_000).default(0),
+});
+
+export const transcriptAudioMetadataSchema = z.object({
+  startedAt: z.coerce.date(),
+  endedAt: z.coerce.date(),
+  durationMs: z.coerce.number().int().min(0).max(10_000),
+  language: z.string().trim().min(2).max(35).optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Live audio activity
 // ---------------------------------------------------------------------------
@@ -98,9 +112,8 @@ export const consentSchema = z.object({
  *
  * `speaking` is this participant's own microphone; `aiSpeaking` is the
  * moderator's voice being played back; `transcribing` is whether this
- * participant's microphone is currently being captured for transcription (the
- * discussion is live, they consented and their microphone is on). All three are
- * optional so a heartbeat can carry whichever changed.
+ * participant's browser is capturing audio for Gemini. All three are optional
+ * so a heartbeat can carry whichever changed.
  */
 export const presenceSchema = z.object({
   speaking: z.coerce.boolean().optional(),

@@ -36,6 +36,7 @@ import LiveMonitorPanel, {
   type ParticipantAction,
 } from "@/components/LiveMonitorPanel";
 import { useLivekitRoom } from "@/hooks/useLivekitRoom";
+import { useGeminiTranscription } from "@/hooks/useGeminiTranscription";
 import { useAssistantVoice } from "@/hooks/useAssistantVoice";
 import { useRoomRecorder } from "@/hooks/useRoomRecorder";
 import { usePresenceReporter } from "@/hooks/usePresenceReporter";
@@ -91,9 +92,9 @@ type RoomUser = { id: string; name: string; email: string; role: "HOST" | "PARTI
 type TranscriptEntry = {
   id: string;
   participantId: string;
+  participantIdentity: string;
   speaker: string;
   speakerIsHost: boolean;
-  isMine: boolean;
   text: string;
   startedAt: string;
   durationMs: number;
@@ -132,7 +133,7 @@ type ParticipationEntry = {
   unansweredInvites: number;
   passCount: number;
   audioIssue: boolean;
-  /** This participant's microphone is being captured for transcription. */
+  /** This participant's audio is being captured for Gemini transcription. */
   transcribing: boolean;
   score: number;
 };
@@ -184,11 +185,15 @@ export default function RoomClient({
    */
   const myBreakoutRoom =
     discussion.breakoutEnabled && !discussion.isHost ? (myMembership?.breakoutRoom ?? null) : null;
+  const transcriptRefreshRef = useRef<() => void>(() => {});
   const media = useLivekitRoom(
     discussion.id,
     myBreakoutRoom,
     isLive && Boolean(participantId),
+    () => transcriptRefreshRef.current(),
   );
+  const localAudioTile = media.tiles.find((tile) => tile.isLocal);
+  const localSpeaking = localAudioTile?.speaking ?? false;
 
   // ---- Session recording ---------------------------------------------------
   /** Every audio track this browser can hear: its own microphone plus each remote speaker. */
@@ -229,21 +234,26 @@ export default function RoomClient({
 
   // ---- Live transcription --------------------------------------------------
   const transcriptRef = useRef<HTMLOListElement | null>(null);
+  const transcriptLoadVersionRef = useRef(0);
   const [segments, setSegments] = useState<TranscriptEntry[]>([]);
   const [consentBusy, setConsentBusy] = useState(false);
 
   const consented = Boolean(myMembership && !myMembership.removed && myMembership.transcriptionConsent);
 
   const loadTranscript = useCallback(async () => {
+    const requestVersion = ++transcriptLoadVersionRef.current;
     try {
       const res = await fetch(`/api/discussions/${initial.id}/transcript`, { cache: "no-store" });
       if (!res.ok) return;
       const data = (await res.json()) as { segments: TranscriptEntry[] };
-      setSegments(data.segments);
+      if (requestVersion === transcriptLoadVersionRef.current) setSegments(data.segments);
     } catch {
       /* transient network errors are ignored; the next poll retries */
     }
   }, [initial.id]);
+  transcriptRefreshRef.current = () => {
+    void loadTranscript();
+  };
 
   useEffect(() => {
     if (!discussion.transcriptionEnabled || discussion.status === "SCHEDULED") return;
@@ -253,20 +263,24 @@ export default function RoomClient({
     return () => clearInterval(timer);
   }, [discussion.transcriptionEnabled, discussion.status, loadTranscript]);
 
-  /**
-   * Whether this participant's voice is being transcribed right now.
-   *
-   * Transcription itself runs in the LiveKit agent, which subscribes to every
-   * participant's microphone; this browser only reports whether its own tracks
-   * are eligible. A muted microphone publishes nothing, so it is not captured —
-   * and a participant who has withdrawn consent is not captured either.
-   */
-  const transcribing =
+  // Transcription follows the microphone, not the consent tick-box: a muted
+  // participant must never have audio captured, and nothing may be transcribed
+  // from a room the participant is only listening to.
+  const shouldTranscribe =
     isLive &&
     discussion.transcriptionEnabled &&
     consented &&
     Boolean(participantId) &&
     media.micEnabled;
+  const speech = useGeminiTranscription({
+    discussionId: discussion.id,
+    enabled: shouldTranscribe,
+    audioTrack: localAudioTile?.audioTrack ?? null,
+    speaking: localSpeaking,
+    onStored: () => transcriptRefreshRef.current(),
+  });
+  const canTranscribe =
+    shouldTranscribe && speech.supported && Boolean(localAudioTile?.audioTrack);
 
   // Keep the transcript pinned to the newest line.
   useEffect(() => {
@@ -275,37 +289,41 @@ export default function RoomClient({
   }, [segments.length]);
 
   /**
-   * State, in the browser's own log, whether this participant is being
-   * captured.
+   * State, in the browser's own log, whether this participant is capturing.
    *
    * "No transcript from me" has several unrelated causes — missing consent, a
-   * muted microphone, a discussion that is not live — and they are
-   * indistinguishable from the outside. Naming the one that applies turns a
-   * vague report into a diagnosable one.
+   * muted microphone, a discussion that is not live, or unsupported audio
+   * capture. Naming the one that applies makes it diagnosable.
    */
   useEffect(() => {
     if (!isLive || !discussion.transcriptionEnabled) return;
-    transcriptLog(transcribing ? "this microphone is being transcribed" : "this microphone is not being transcribed", {
+    transcriptLog(canTranscribe ? "capturing this microphone" : "not capturing this microphone", {
       participantId,
       consented,
       micEnabled: media.micEnabled,
-      reason: transcribing
+      browserSupportsGeminiCapture: speech.supported,
+      reason: canTranscribe
         ? undefined
         : !participantId
           ? "not a member of this discussion"
           : !consented
             ? "transcription consent not given"
-            : !media.micEnabled
-              ? "microphone is off"
-              : "discussion is not live",
+            : !speech.supported
+              ? "browser cannot record microphone audio"
+              : !localAudioTile?.audioTrack
+                ? "local microphone track is unavailable"
+              : !media.micEnabled
+                ? "microphone is off"
+                : "discussion is not live",
     });
   }, [
+    canTranscribe,
     consented,
     discussion.transcriptionEnabled,
     isLive,
     media.micEnabled,
     participantId,
-    transcribing,
+    speech.supported,
   ]);
 
   const setConsent = useCallback(
@@ -624,24 +642,13 @@ export default function RoomClient({
   }, [removed, disconnect]);
 
   // ---- Live audio activity, reported to the moderator ----------------------
-  /**
-   * Whether this browser's own microphone is carrying speech. Read from the
-   * live tile rather than the transcript: the moderator must know somebody has
-   * the floor the instant they start talking, not seconds later when their
-   * sentence is finally transcribed.
-   */
-  const localSpeaking = useMemo(
-    () => media.tiles.find((tile) => tile.isLocal)?.speaking ?? false,
-    [media.tiles],
-  );
   usePresenceReporter({
     discussionId: discussion.id,
     enabled: isLive && Boolean(participantId) && !removed && media.status === "connected",
     speaking: localSpeaking,
     aiSpeaking: voice.speaking,
-    // The transcription agent transcribes exactly the microphones that are
-    // live, consented and unmuted, which is the condition reported here.
-    transcribing,
+    // The local recorder actually running is what proves capture is active.
+    transcribing: speech.listening,
   });
 
   /** What the conversation engine believes the room is doing right now. */
@@ -835,9 +842,9 @@ export default function RoomClient({
         <div className="flex flex-wrap items-center gap-3 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm">
           <ShieldCheck className="h-4 w-4 text-warn" />
           <span className="text-warn">
-            Live transcription is on. While your microphone is on, your speech is transcribed and
-            shared with the room, and the session audio is recorded so it can be reviewed after the
-            discussion. Your microphone stays off until you turn it on.
+            {speech.supported
+              ? "Live transcription is on. When your microphone is on, short audio clips are sent to Gemini for transcription and shared with the room. The session audio is also recorded for review. Your microphone stays off until you turn it on."
+              : "Live transcription is on and the session audio is recorded for review. This browser cannot record microphone audio for Gemini transcription; update your browser to use the live transcript."}
           </span>
           <button
             type="button"
@@ -965,17 +972,29 @@ export default function RoomClient({
               <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
                 <ScrollText className="h-4 w-4" /> Live transcript
                 <span className="ml-auto text-xs font-normal normal-case">
-                  {transcribing
-                    ? "listening"
-                    : !isLive
-                      ? "offline"
-                      : !discussion.transcriptionEnabled
-                        ? "off"
-                        : consented
-                          ? "mic off"
-                          : "consent needed"}
+                  {!speech.supported
+                    ? "browser not supported"
+                    : canTranscribe
+                      ? speech.listening
+                        ? "listening"
+                        : "starting…"
+                      : consented
+                        ? media.micEnabled
+                          ? "paused"
+                          : "mic off"
+                        : isLive
+                          ? "consent needed"
+                          : "offline"}
                 </span>
               </h2>
+
+              {speech.error && <p className="mt-2 text-xs text-danger">{speech.error}</p>}
+              {!speech.supported && (
+                <p className="mt-2 text-xs text-muted">
+                  Live transcription sends short microphone clips to Gemini. This browser does not
+                  support the required audio recording APIs, but you can still follow the shared transcript.
+                </p>
+              )}
 
               <ol ref={transcriptRef} className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
                 {segments.length === 0 ? (
@@ -986,12 +1005,12 @@ export default function RoomClient({
                   segments.map((entry) => (
                     <li key={entry.id} className="text-sm">
                       <span className="mr-2 font-medium text-accent">
-                        {entry.isMine ? "You" : entry.speaker}
+                        {entry.speaker}:
                       </span>
-                      <span className="text-xs text-muted">
+                      <span className="text-ink">{entry.text}</span>
+                      <span className="ml-2 text-xs text-muted">
                         {new Date(entry.startedAt).toLocaleTimeString()}
                       </span>
-                      <p className="text-ink">{entry.text}</p>
                     </li>
                   ))
                 )}
