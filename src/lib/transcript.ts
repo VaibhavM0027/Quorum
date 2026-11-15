@@ -1,9 +1,9 @@
 /**
  * Transcript helpers.
  *
- * Each participant's browser captures their own microphone audio and sends
- * short clips to the server for Gemini transcription, so speaker attribution
- * is tied to the authenticated participant rather than inferred from audio.
+ * Each participant's browser transcribes their own microphone, so speaker
+ * attribution is tied to the authenticated participant rather than inferred
+ * from audio.
  */
 
 /** Collapses whitespace and trims a spoken chunk. */
@@ -11,8 +11,65 @@ export function normalizeTranscript(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Combines successive speech-recognition hypotheses without repeating the
+ * words already present at the join. Recognition engines may return either a
+ * cumulative hypothesis or only the newest overlapping phrase.
+ */
+export function mergeTranscriptText(previous: string, next: string): string {
+  const left = normalizeTranscript(previous);
+  const right = normalizeTranscript(next);
+  if (!left) return right;
+  if (!right) return left;
+
+  const leftWords = left.split(" ");
+  const rightWords = right.split(" ");
+  const comparable = (word: string) =>
+    word.toLocaleLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  const normalizedLeft = leftWords.map(comparable);
+  const normalizedRight = rightWords.map(comparable);
+
+  if (normalizedRight.length < normalizedLeft.length &&
+    normalizedRight.every((word, index) => word === normalizedLeft[index])) {
+    return left;
+  }
+  if (
+    normalizedRight.length === normalizedLeft.length &&
+    normalizedRight.every((word, index) => word === normalizedLeft[index])
+  ) return right;
+
+  if (
+    normalizedRight.length < normalizedLeft.length &&
+    normalizedLeft.slice(-normalizedRight.length).every((word, index) => word === normalizedRight[index])
+  ) return left;
+
+  let overlap = Math.min(normalizedLeft.length, normalizedRight.length);
+  while (overlap > 0) {
+    const matches = normalizedLeft
+      .slice(-overlap)
+      .every((word, index) => word === normalizedRight[index]);
+    if (matches) break;
+    overlap -= 1;
+  }
+
+  if (overlap === normalizedRight.length) return left;
+  return normalizeTranscript([...leftWords.slice(0, leftWords.length - overlap), ...rightWords].join(" "));
+}
+
 /** LiveKit topic used to invalidate room transcript views after a committed segment. */
 export const TRANSCRIPT_UPDATE_TOPIC = "quorum.transcript.updated";
+export const TRANSCRIPT_PARTIAL_TOPIC = "quorum.transcript.partial";
+
+/** Use audio chunks when browser streaming is unsupported or has no usable service/model. */
+export function shouldUseGeminiAudioFallback(
+  streamingSupported: boolean,
+  streamingError: string | null,
+): boolean {
+  return (
+    !streamingSupported ||
+    Boolean(streamingError?.startsWith("On-device recognition unavailable:"))
+  );
+}
 
 /** Counts words in a transcript chunk. */
 export function countWords(text: string): number {
@@ -34,6 +91,27 @@ export const MIN_SEGMENT_WORDS = 1;
  * treated as the same utterance.
  */
 export const DUPLICATE_WINDOW_MS = 5000;
+
+export type TranscriptVersion = {
+  status: "PARTIAL" | "FINAL";
+  revision: number;
+};
+
+/** Stale room packets can neither replace a newer draft nor downgrade a final. */
+export function shouldApplyTranscriptDraft(
+  current: TranscriptVersion | null | undefined,
+  incomingRevision: number,
+): boolean {
+  return !current || (current.status === "PARTIAL" && incomingRevision >= current.revision);
+}
+
+/** A clear packet only removes the draft revision it was sent to clear. */
+export function shouldClearTranscriptDraft(
+  current: TranscriptVersion | null | undefined,
+  clearRevision: number,
+): boolean {
+  return current?.status === "PARTIAL" && current.revision <= clearRevision;
+}
 
 /** The stored shape the duplicate check needs from the previous chunk. */
 export type StoredSegment = { text: string; startedAt: Date };

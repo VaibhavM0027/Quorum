@@ -6,6 +6,7 @@ import {
   loginSchema,
   registerSchema,
   transcriptAudioMetadataSchema,
+  transcriptPartialSchema,
   transcriptSegmentSchema,
 } from "@/lib/validation";
 
@@ -110,26 +111,48 @@ describe("validation schemas", () => {
   });
 
   describe("transcriptAudioMetadataSchema", () => {
-    it("validates chunk timestamps, duration and optional language", () => {
+    it("validates buffered audio timestamps, duration and optional language", () => {
       const parsed = transcriptAudioMetadataSchema.parse({
         startedAt: "2026-01-01T10:00:00.000Z",
-        endedAt: "2026-01-01T10:00:06.000Z",
-        durationMs: "2400",
+        endedAt: "2026-01-01T10:00:45.000Z",
+        durationMs: "45000",
         language: "en-IN",
       });
       expect(parsed.startedAt).toBeInstanceOf(Date);
-      expect(parsed.durationMs).toBe(2400);
+      expect(parsed.durationMs).toBe(45_000);
       expect(parsed.language).toBe("en-IN");
     });
 
-    it("rejects a chunk duration outside the recorder's maximum", () => {
+    it("rejects audio duration outside the recorder's maximum", () => {
       expect(() =>
         transcriptAudioMetadataSchema.parse({
           startedAt: new Date(),
           endedAt: new Date(),
-          durationMs: 10_001,
+          durationMs: 45_001,
         }),
       ).toThrow();
+    });
+
+    describe("transcriptPartialSchema", () => {
+      it("requires a stable stream id and a nonnegative revision", () => {
+        const parsed = transcriptPartialSchema.parse({
+          streamId: "ac527a9c-17c8-4e31-b9f1-0f207da71222",
+          revision: 3,
+          text: "partial words",
+          startedAt: "2026-01-01T10:00:00.000Z",
+        });
+        expect(parsed.startedAt).toBeInstanceOf(Date);
+        expect(parsed.revision).toBe(3);
+
+        expect(() =>
+          transcriptPartialSchema.parse({
+            streamId: "not-a-uuid",
+            revision: -1,
+            text: "partial words",
+            startedAt: new Date(),
+          }),
+        ).toThrow();
+      });
     });
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { normalizeTranscript } from "@/lib/transcript";
+import { mergeTranscriptText, normalizeTranscript } from "@/lib/transcript";
 import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
 
 /**
@@ -13,8 +13,8 @@ import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
  * recognition.
  *
  * Support: Chromium-based browsers (Chrome, Edge, Brave, Opera). Firefox and
- * Safari do not implement SpeechRecognition, so `supported` stays false and the
- * UI falls back to the shared chat instead.
+ * Safari do not implement SpeechRecognition, so `supported` stays false and
+ * the room uses its Gemini audio-chunk fallback instead.
  */
 
 type SpeechAlternative = { transcript: string; confidence: number };
@@ -98,10 +98,19 @@ function getRecognitionCtor(): SpeechRecognitionCtor | null {
 }
 
 export type FinalSegment = {
+  streamId: string;
   text: string;
   startedAt: Date;
   endedAt: Date;
   durationMs: number;
+};
+
+export type PartialSegment = {
+  streamId: string;
+  revision: number;
+  text: string;
+  startedAt: Date;
+  active: boolean;
 };
 
 /**
@@ -109,7 +118,8 @@ export type FinalSegment = {
  * noticeably better with `en-IN`; a deployment can set NEXT_PUBLIC_SPEECH_LANG
  * to change it without touching the code.
  */
-const DEFAULT_LANG = process.env.NEXT_PUBLIC_SPEECH_LANG ?? "en-US";
+const DEFAULT_LANG = process.env.NEXT_PUBLIC_SPEECH_LANG ?? "en-IN";
+const FINALIZE_PAUSE_MS = 1_200;
 
 export type SpeechTranscription = {
   supported: boolean;
@@ -121,15 +131,18 @@ export type SpeechTranscription = {
 /**
  * @param enabled  Whether transcription should currently be capturing.
  * @param onSegment Called once per finalised utterance.
+ * @param onPartial Called as interim text changes and when its stream ends.
  * @param lang     BCP-47 language tag for the recogniser.
  */
 export function useSpeechTranscription({
   enabled,
   onSegment,
+  onPartial,
   lang = DEFAULT_LANG,
 }: {
   enabled: boolean;
   onSegment: (segment: FinalSegment) => void;
+  onPartial?: (segment: PartialSegment) => void;
   lang?: string;
 }): SpeechTranscription {
   const [supported] = useState(() => Boolean(getRecognitionCtor()));
@@ -141,6 +154,10 @@ export function useSpeechTranscription({
   /** Intent flag: true while we want the recogniser running (it auto-restarts). */
   const wantListeningRef = useRef(false);
   const phraseStartRef = useRef<number | null>(null);
+  const finalTranscriptRef = useRef("");
+  const interimTranscriptRef = useRef("");
+  const finalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finalizeCurrentRef = useRef<() => void>(() => {});
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttemptRef = useRef(0);
   const networkFailureRef = useRef(false);
@@ -151,6 +168,10 @@ export function useSpeechTranscription({
   const recognitionEndedRef = useRef(false);
   const onSegmentRef = useRef(onSegment);
   onSegmentRef.current = onSegment;
+  const onPartialRef = useRef(onPartial);
+  onPartialRef.current = onPartial;
+  const streamIdRef = useRef<string | null>(null);
+  const streamRevisionRef = useRef(0);
 
   // Build the recogniser once. Rebuilt only if the language changes.
   useEffect(() => {
@@ -171,6 +192,56 @@ export function useSpeechTranscription({
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
 
+    const clearFinalizeTimer = () => {
+      if (finalizeTimerRef.current) clearTimeout(finalizeTimerRef.current);
+      finalizeTimerRef.current = null;
+    };
+
+    const clearDraft = (streamId: string) => {
+      onPartialRef.current?.({
+        streamId,
+        revision: streamRevisionRef.current + 1,
+        text: "",
+        startedAt: new Date(phraseStartRef.current ?? Date.now()),
+        active: false,
+      });
+    };
+
+    const finalizeCurrentUtterance = () => {
+      clearFinalizeTimer();
+      const text = mergeTranscriptText(finalTranscriptRef.current, interimTranscriptRef.current);
+      const streamId = streamIdRef.current;
+      const startedAt = phraseStartRef.current ?? Date.now();
+      const endedAt = Date.now();
+
+      if (streamId) clearDraft(streamId);
+      finalTranscriptRef.current = "";
+      interimTranscriptRef.current = "";
+      phraseStartRef.current = null;
+      streamIdRef.current = null;
+      streamRevisionRef.current = 0;
+      setInterim("");
+
+      if (!text) return;
+      transcriptLog("utterance committed", {
+        chars: text.length,
+        durationMs: Math.max(0, endedAt - startedAt),
+      });
+      onSegmentRef.current({
+        streamId: streamId ?? createStreamId(),
+        text,
+        startedAt: new Date(startedAt),
+        endedAt: new Date(endedAt),
+        durationMs: Math.max(0, endedAt - startedAt),
+      });
+    };
+    finalizeCurrentRef.current = finalizeCurrentUtterance;
+
+    const scheduleFinalize = () => {
+      clearFinalizeTimer();
+      finalizeTimerRef.current = setTimeout(finalizeCurrentUtterance, FINALIZE_PAUSE_MS);
+    };
+
     recognition.onstart = () => {
       recognitionEndedRef.current = false;
       setListening(true);
@@ -184,33 +255,37 @@ export function useSpeechTranscription({
       retryAttemptRef.current = 0;
       networkFailureRef.current = false;
       setError(null);
-      let pending = "";
+      let changedFinalText = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const result = event.results[i];
         const chunk = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          const text = normalizeTranscript(chunk);
-          if (text) {
-            const endedAt = Date.now();
-            const startedAt = phraseStartRef.current ?? endedAt;
-            phraseStartRef.current = null;
-            transcriptLog("utterance committed", {
-              chars: text.length,
-              durationMs: Math.max(0, endedAt - startedAt),
-            });
-            onSegmentRef.current({
-              text,
-              startedAt: new Date(startedAt),
-              endedAt: new Date(endedAt),
-              durationMs: Math.max(0, endedAt - startedAt),
-            });
-          }
-        } else {
-          if (phraseStartRef.current === null) phraseStartRef.current = Date.now();
-          pending += chunk;
+          changedFinalText = mergeTranscriptText(changedFinalText, chunk);
         }
       }
-      setInterim(normalizeTranscript(pending));
+      finalTranscriptRef.current = mergeTranscriptText(finalTranscriptRef.current, changedFinalText);
+
+      const interimParts: string[] = [];
+      for (let i = 0; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        if (!result.isFinal) interimParts.push(result[0]?.transcript ?? "");
+      }
+      interimTranscriptRef.current = normalizeTranscript(interimParts.join(" "));
+
+      const liveText = mergeTranscriptText(finalTranscriptRef.current, interimTranscriptRef.current);
+      if (!liveText) return;
+      if (phraseStartRef.current === null) phraseStartRef.current = Date.now();
+      if (!streamIdRef.current) streamIdRef.current = createStreamId();
+      setInterim(liveText);
+      streamRevisionRef.current += 1;
+      onPartialRef.current?.({
+        streamId: streamIdRef.current,
+        revision: streamRevisionRef.current,
+        text: liveText,
+        startedAt: new Date(phraseStartRef.current),
+        active: true,
+      });
+      scheduleFinalize();
     };
 
     recognition.onerror = (event) => {
@@ -223,6 +298,7 @@ export function useSpeechTranscription({
         return;
       }
       if (event.error === "network") {
+        finalizeCurrentUtterance();
         networkFailureRef.current = true;
         if (onDeviceStateRef.current === "installing") {
           setError("Speech service is unreachable; checking for on-device recognition…");
@@ -251,6 +327,8 @@ export function useSpeechTranscription({
               onDeviceStateRef.current = "unavailable";
               onDeviceFailureRef.current = result.reason;
               if (!wantListeningRef.current) return;
+              wantListeningRef.current = false;
+              networkFailureRef.current = false;
               transcriptWarn("on-device recognition unavailable", { lang, reason: result.reason });
               setError(
                 `On-device recognition unavailable: ${result.reason}. The browser speech service is still unreachable; check your internet connection.`,
@@ -295,8 +373,8 @@ export function useSpeechTranscription({
           /* a restart raced with a stop; fall through */
         }
       }
+      finalizeCurrentUtterance();
       setListening(false);
-      setInterim("");
     };
 
     function scheduleNetworkRetry() {
@@ -324,6 +402,8 @@ export function useSpeechTranscription({
       recognition.onend = null;
       recognition.onerror = null;
       recognition.onresult = null;
+      clearFinalizeTimer();
+      finalizeCurrentRef.current = () => {};
       try {
         recognition.abort();
       } catch {
@@ -340,7 +420,6 @@ export function useSpeechTranscription({
 
     if (enabled) {
       wantListeningRef.current = true;
-      phraseStartRef.current = null;
       transcriptLog("transcription enabled");
       try {
         recognition.start();
@@ -353,15 +432,13 @@ export function useSpeechTranscription({
       retryTimerRef.current = null;
       retryAttemptRef.current = 0;
       networkFailureRef.current = false;
-      phraseStartRef.current = null;
       setError(null);
       transcriptLog("transcription disabled");
       try {
         recognition.stop();
       } catch {
-        /* not running */
+        finalizeCurrentRef.current();
       }
-      setInterim("");
       setListening(false);
     }
   }, [enabled]);
@@ -375,13 +452,29 @@ export function useSpeechTranscription({
       try {
         recognition.stop();
       } catch {
-        /* not running */
+        finalizeCurrentRef.current();
       }
-    }
+    } else finalizeCurrentRef.current();
   }, []);
 
   // Never leave the microphone hot after the component unmounts.
   useEffect(() => stop, [stop]);
 
   return { supported, listening, interim, error };
+}
+
+function createStreamId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+
+  const bytes = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
 }

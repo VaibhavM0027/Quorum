@@ -5,7 +5,11 @@ import {
   isDuplicateSegment,
   isMeaningful,
   leastSpokenParticipant,
+  mergeTranscriptText,
   normalizeTranscript,
+  shouldApplyTranscriptDraft,
+  shouldClearTranscriptDraft,
+  shouldUseGeminiAudioFallback,
   speakingTotals,
   TRANSCRIPT_CSV_COLUMNS,
   transcriptToCsv,
@@ -17,6 +21,37 @@ describe("transcript helpers", () => {
   describe("normalizeTranscript", () => {
     it("collapses runs of whitespace", () => {
       expect(normalizeTranscript("  hello    world \n again ")).toBe("hello world again");
+    });
+
+    describe("mergeTranscriptText", () => {
+      it("replaces cumulative partials without repeating their words", () => {
+        expect(mergeTranscriptText("Hello", "Hello everyone")).toBe("Hello everyone");
+        expect(mergeTranscriptText("Hello everyone", "Hello everyone today")).toBe(
+          "Hello everyone today",
+        );
+      });
+
+      it("joins overlapping final hypotheses and preserves the final punctuation", () => {
+        expect(mergeTranscriptText("Hello everyone", "everyone, today.")).toBe(
+          "Hello everyone, today.",
+        );
+        expect(mergeTranscriptText("Hello everyone, today", "Hello everyone, today.")).toBe(
+          "Hello everyone, today.",
+        );
+      });
+
+      it.each([
+        "Hello everyone.",
+        "Artificial Intelligence is transforming the world.",
+        "Today we are discussing the applications of machine learning.",
+        "I believe technology will change the future.",
+        "There are several advantages and disadvantages of artificial intelligence.",
+      ])("keeps the complete sentence as recognition results grow: %s", (sentence) => {
+        const words = sentence.split(" ");
+        const partials = words.map((_, index) => words.slice(0, index + 1).join(" "));
+        const merged = partials.reduce((current, partial) => mergeTranscriptText(current, partial), "");
+        expect(mergeTranscriptText(merged, sentence)).toBe(sentence);
+      });
     });
 
     it("handles empty input", () => {
@@ -54,6 +89,41 @@ describe("transcript helpers", () => {
     it("is false when there is nothing to compare against", () => {
       expect(isDuplicateSegment(null, previous.text, base)).toBe(false);
       expect(isDuplicateSegment(undefined, previous.text, base)).toBe(false);
+    });
+
+    describe("live transcript revisions", () => {
+      it("ignores an older draft packet", () => {
+        expect(shouldApplyTranscriptDraft({ status: "PARTIAL", revision: 4 }, 3)).toBe(false);
+      });
+
+      describe("transcription provider fallback", () => {
+        it("uses Gemini when browser streaming is unsupported", () => {
+          expect(shouldUseGeminiAudioFallback(false, null)).toBe(true);
+        });
+
+        it("uses Gemini when streaming and on-device recognition are unavailable", () => {
+          expect(
+            shouldUseGeminiAudioFallback(
+              true,
+              "On-device recognition unavailable: no language pack.",
+            ),
+          ).toBe(true);
+        });
+
+        it("keeps streaming recognition as the only provider when it is working", () => {
+          expect(shouldUseGeminiAudioFallback(true, null)).toBe(false);
+        });
+      });
+
+      it("does not allow a draft packet to replace a final segment", () => {
+        expect(shouldApplyTranscriptDraft({ status: "FINAL", revision: 4 }, 5)).toBe(false);
+      });
+
+      it("accepts a newer draft and clears only its current revision", () => {
+        expect(shouldApplyTranscriptDraft({ status: "PARTIAL", revision: 4 }, 5)).toBe(true);
+        expect(shouldClearTranscriptDraft({ status: "PARTIAL", revision: 4 }, 4)).toBe(true);
+        expect(shouldClearTranscriptDraft({ status: "PARTIAL", revision: 5 }, 4)).toBe(false);
+      });
     });
 
     it("treats an identical chunk inside the window as the same utterance", () => {

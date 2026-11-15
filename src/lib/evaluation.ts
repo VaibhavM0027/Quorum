@@ -116,6 +116,7 @@ export async function computeDiscussionStats(discussionId: string): Promise<Disc
         },
       },
       segments: {
+        where: { status: "FINAL" },
         orderBy: { startedAt: "asc" },
         select: {
           participantId: true,

@@ -26,7 +26,12 @@ export async function POST(_request: Request, { params }: Params) {
 
     const discussion = await prisma.discussion.findUnique({
       where: { id },
-      select: { id: true, hostId: true, status: true, _count: { select: { segments: true } } },
+      select: {
+        id: true,
+        hostId: true,
+        status: true,
+        _count: { select: { segments: { where: { status: "FINAL" } } } },
+      },
     });
     if (!discussion) return fail("Discussion not found.", 404);
     if (discussion.hostId !== user.id) {

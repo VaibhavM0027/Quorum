@@ -131,7 +131,11 @@ export async function loadDiscussionReport(
         orderBy: [{ isHost: "desc" }, { createdAt: "asc" }],
         include: { evaluation: true },
       },
-      segments: { orderBy: { startedAt: "asc" }, take: MAX_TRANSCRIPT_LINES },
+      segments: {
+        where: { status: "FINAL" },
+        orderBy: { startedAt: "asc" },
+        take: MAX_TRANSCRIPT_LINES,
+      },
     },
   });
   if (!discussion) return null;

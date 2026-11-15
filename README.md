@@ -16,7 +16,7 @@ reports.
 | Hosting a GD | Create a discussion (title, topic, context, rules, duration, mode), get a human-friendly join code and an invite link. Start, end, cancel or reopen the room. |
 | Joining | Participants join with a code or invite link, give transcription consent, and are admitted until the room is full. |
 | Live media | Real audio/video via LiveKit (SFU). Hosts can lock a participant's mic or remove them mid-session. |
-| Transcription | Each participant's browser captures their own microphone in short chunks. Quorum sends clips to Gemini from the server, where the configured API key remains private; speaker attribution comes from the authenticated LiveKit identity. |
+| Transcription | Each participant's browser transcribes their own microphone with streaming interim results where available. One live utterance is updated as results arrive and finalized after a natural pause; drafts are shared over LiveKit and the same stream record becomes final. Unsupported or unavailable browser recognition falls back to silence-delimited Gemini audio. |
 | AI assistant | A live relevance score per contribution, plus AI-generated silence prompts, quiet-participant nudges and off-topic reminders. Every assistant message is stored and auditable — nothing is faked. |
 | Evaluation | Host-triggered evaluation scores six weighted rubric dimensions per participant, grounded in the transcript. The overall score is always computed server-side. |
 | Reports | In-app report page plus downloadable PDFs: an individual report per participant and one whole-room (overall) report. |
@@ -49,9 +49,16 @@ Key design decisions:
   identity), then LiveKit notifies active room clients to reload it. Periodic
   polling recovers updates missed during a disconnect or reconnect, and queued
   submissions retry after temporary network or LiveKit reconnects.
-- **Audio is sent to Gemini server-side.** Only consented, active microphone
-  chunks are sent to the configured Gemini model; raw chunks are not stored by
-  the transcription endpoint. The separate session recording feature remains
+- **Interim speech is room-wide.** Supported browsers publish the current
+  sentence hypothesis over LiveKit immediately; the backend periodically saves
+  the current draft with its participant and stream identity. This bridges partials across
+  breakout rooms. A final result updates that same stream record, and partials
+  are excluded from scoring and exports.
+- **Audio fallback remains server-side.** Browsers without streaming speech
+  recognition, or with an unavailable speech service/language pack, buffer
+  consented microphone audio until a natural silence (with a 45-second safety
+  cap) before sending it to Gemini. Raw chunks are not stored by the
+  transcription endpoint. The separate session recording feature remains
   unchanged.
 - **Scores are reproducible.** Statistics (speaking time, contributions, words,
   relevance verdicts) come from stored data; the AI only supplies rubric scores
@@ -72,7 +79,7 @@ Key design decisions:
 - **Auth:** `jose` (HS256 JWT sessions) + `bcryptjs` password hashing
 - **Real-time media:** LiveKit (`livekit-server-sdk` server-side, `livekit-client` in the browser)
 - **AI:** Google Gemini (server-side only, key never reaches the browser)
-- **Transcription:** Gemini audio understanding, called by the server
+- **Transcription:** Web Speech API interim recognition with Gemini audio-chunk fallback
 - **Reports:** PDFKit, Recharts (charts on the report page)
 - **Tests:** Vitest
 
@@ -85,7 +92,10 @@ Key design decisions:
 - **A LiveKit server** — either the local dev server (`livekit-server --dev`)
   or LiveKit Cloud
 - **A Gemini API key** (optional; transcription and AI features require it)
-- A modern browser with `MediaRecorder` and Web Audio support for transcription
+- A modern browser with microphone capture and Web Audio support; Chromium-based
+  browsers additionally use progressive Web Speech recognition when available.
+  Set `NEXT_PUBLIC_SPEECH_LANG` to choose another BCP-47 recognition language
+  (the default is `en-IN`).
 
 ---
 
@@ -282,20 +292,22 @@ Notes:
 
 | Service | Purpose | Pricing consideration | Free alternative |
 | --- | --- | --- | --- |
-| **Google Gemini** | Audio transcription, relevance scoring, live moderation, rubric evaluation | Free tier is rate-limited; paid tier bills per token and audio volume. Transcript audio requests are rate-limited per participant and room. | Self-host an open model and adapt `src/lib/gemini.ts`. Without a key, transcription and AI features are unavailable. |
+| **Google Gemini** | Audio transcription fallback, relevance scoring, live moderation, rubric evaluation | Free tier is rate-limited; paid tier bills per token and audio volume. Transcript audio requests are rate-limited per participant and room. | Self-host an open model and adapt `src/lib/gemini.ts`. Without a key, the audio fallback and Gemini AI features are unavailable; supported browsers can still use streaming speech recognition. |
 | **LiveKit** | Real-time audio/video | LiveKit Cloud is usage-based (participant-minutes). | The self-hosted `livekit-server` is free; use `--dev` locally or deploy the OSS server in production. |
 
 Gemini is only ever called server-side. If no key is configured, the app does not
-pretend AI is working: `/api/health` reports it as unconfigured, and AI-dependent
-actions return a clear message instead of a fake result.
+pretend Gemini AI is working: `/api/health` reports it as unconfigured, and
+Gemini-dependent actions return a clear message instead of a fake result.
 
 ---
 
 ## 11. Known limitations
 
-- **Transcription** uses short Gemini audio requests, not a continuous streaming
-  ASR session. Expect chunk-level latency; use a dedicated streaming speech-to-text
-  service if sub-second interim captions are required.
+- **Transcription latency depends on browser support and service availability.**
+  Working Web Speech recognition gives streaming interim captions and
+  sentence-level finalization. Gemini's current `generateContent` audio path
+  is not a streaming STT API: its fallback displays finalized text only after
+  a silence-delimited audio request completes.
 - **Rate limiting** is per-process (see §8).
 - **No migrations directory** — the schema is applied with `prisma db push`. For
   a production deployment with change history, switch to `prisma migrate`.

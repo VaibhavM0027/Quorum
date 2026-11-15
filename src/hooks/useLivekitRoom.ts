@@ -9,7 +9,10 @@ import type {
   Room as LKRoom,
 } from "livekit-client";
 import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
-import { TRANSCRIPT_UPDATE_TOPIC } from "@/lib/transcript";
+import {
+  TRANSCRIPT_PARTIAL_TOPIC,
+  TRANSCRIPT_UPDATE_TOPIC,
+} from "@/lib/transcript";
 
 /**
  * LiveKit connection for a single discussion room.
@@ -35,6 +38,23 @@ export type TileInfo = {
   camEnabled: boolean;
   speaking: boolean;
 };
+
+export type TranscriptDraftMessage =
+  | {
+      type: "partial";
+      streamId: string;
+      revision: number;
+      text: string;
+      startedAt: string;
+      participantIdentity: string;
+      participantName: string;
+    }
+  | {
+      type: "partial-cleared";
+      streamId: string;
+      revision: number;
+      participantIdentity: string;
+    };
 
 function parseHost(metadata: string | undefined): boolean {
   if (!metadata) return false;
@@ -102,10 +122,13 @@ export function useLivekitRoom(
   breakoutRoom: number | null,
   shouldConnect: boolean,
   onTranscriptUpdate?: () => void,
+  onTranscriptDraft?: (message: TranscriptDraftMessage) => void,
 ) {
   const roomRef = useRef<LKRoom | null>(null);
   const onTranscriptUpdateRef = useRef(onTranscriptUpdate);
   onTranscriptUpdateRef.current = onTranscriptUpdate;
+  const onTranscriptDraftRef = useRef(onTranscriptDraft);
+  onTranscriptDraftRef.current = onTranscriptDraft;
   const [status, setStatus] = useState<LivekitStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [tiles, setTiles] = useState<TileInfo[]>([]);
@@ -244,10 +267,62 @@ export function useLivekitRoom(
           .on(lk.RoomEvent.LocalTrackPublished, onLocalTrackPublished)
           .on(lk.RoomEvent.LocalTrackUnpublished, onChange)
           .on(lk.RoomEvent.ActiveSpeakersChanged, onChange)
-          .on(lk.RoomEvent.DataReceived, (_payload, _participant, _kind, topic) => {
-            if (topic === TRANSCRIPT_UPDATE_TOPIC) {
-              onTranscriptUpdateRef.current?.();
+          .on(lk.RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+            if (topic === TRANSCRIPT_PARTIAL_TOPIC) {
+              try {
+                const message = JSON.parse(new TextDecoder().decode(payload)) as {
+                  type?: unknown;
+                  streamId?: unknown;
+                  text?: unknown;
+                  startedAt?: unknown;
+                  revision?: unknown;
+                  participantIdentity?: unknown;
+                  participantName?: unknown;
+                };
+                const identity =
+                  participant?.identity ??
+                  (typeof message.participantIdentity === "string"
+                    ? message.participantIdentity
+                    : null);
+                if (!identity || typeof message.streamId !== "string") return;
+                if (
+                  message.type === "partial" &&
+                  typeof message.text === "string" &&
+                  typeof message.startedAt === "string" &&
+                  typeof message.revision === "number"
+                ) {
+                  onTranscriptDraftRef.current?.({
+                    type: "partial",
+                    streamId: message.streamId,
+                    revision: message.revision,
+                    text: message.text,
+                    startedAt: message.startedAt,
+                    participantIdentity: identity,
+                    participantName:
+                      participant?.name ||
+                      (typeof message.participantName === "string"
+                        ? message.participantName
+                        : identity),
+                  });
+                } else if (
+                  message.type === "partial-cleared" &&
+                  typeof message.revision === "number"
+                ) {
+                  onTranscriptDraftRef.current?.({
+                    type: "partial-cleared",
+                    streamId: message.streamId,
+                    revision: message.revision,
+                    participantIdentity: identity,
+                  });
+                }
+              } catch {
+                transcriptWarn("invalid live transcript draft packet", {
+                  identity: participant?.identity ?? null,
+                });
+              }
+              return;
             }
+            if (topic === TRANSCRIPT_UPDATE_TOPIC) onTranscriptUpdateRef.current?.();
           })
           .on(lk.RoomEvent.Reconnecting, () => setStatus("reconnecting"))
           .on(lk.RoomEvent.Reconnected, () => {
@@ -412,6 +487,25 @@ export function useLivekitRoom(
     setStatus("idle");
   }, []);
 
+  const publishTranscriptDraft = useCallback((message: {
+    type: "partial" | "partial-cleared";
+    streamId: string;
+    revision: number;
+    text?: string;
+    startedAt?: string;
+  }) => {
+    const room = roomRef.current;
+    if (!room) return;
+    const topic = TRANSCRIPT_PARTIAL_TOPIC;
+    void room.localParticipant
+      .publishData(new TextEncoder().encode(JSON.stringify(message)), { reliable: true, topic })
+      .catch((cause: unknown) => {
+        transcriptWarn("could not publish live transcript draft", {
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      });
+  }, []);
+
   return {
     status,
     error,
@@ -424,6 +518,7 @@ export function useLivekitRoom(
     setMic,
     toggleCam,
     disconnect,
+    publishTranscriptDraft,
   };
 }
 

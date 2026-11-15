@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const CHUNK_DURATION_MS = 6000;
+const MAX_SEGMENT_DURATION_MS = 45_000;
+const SILENCE_FINALIZE_MS = 1_200;
+const PRE_ROLL_MS = 250;
 const TARGET_SAMPLE_RATE = 16_000;
 const MAX_PENDING_CHUNKS = 20;
-const DEFAULT_LANG = process.env.NEXT_PUBLIC_SPEECH_LANG ?? "en-US";
+const DEFAULT_LANG = process.env.NEXT_PUBLIC_SPEECH_LANG ?? "en-IN";
 
 type AudioChunk = {
   audio: Blob;
@@ -33,13 +35,29 @@ function getAudioContextConstructor(): typeof AudioContext | null {
 export function encodePcmWav(sourceSamples: Float32Array, sourceSampleRate: number): Blob {
   const outputLength = Math.ceil((sourceSamples.length * TARGET_SAMPLE_RATE) / sourceSampleRate);
   const samples = new Int16Array(outputLength);
+  const downsamplingRatio = sourceSampleRate / TARGET_SAMPLE_RATE;
   for (let i = 0; i < outputLength; i += 1) {
-    const sourcePosition = (i * sourceSampleRate) / TARGET_SAMPLE_RATE;
-    const sourceIndex = Math.floor(sourcePosition);
-    const fraction = sourcePosition - sourceIndex;
-    const left = sourceSamples[sourceIndex] ?? 0;
-    const right = sourceSamples[sourceIndex + 1] ?? left;
-    const sample = Math.max(-1, Math.min(1, left + (right - left) * fraction));
+    let sample: number;
+    if (downsamplingRatio > 1) {
+      const start = i * downsamplingRatio;
+      const end = Math.min((i + 1) * downsamplingRatio, sourceSamples.length);
+      let weightedSum = 0;
+      let weightTotal = 0;
+      for (let index = Math.floor(start); index < end; index += 1) {
+        const weight = Math.min(end, index + 1) - Math.max(start, index);
+        weightedSum += (sourceSamples[index] ?? 0) * weight;
+        weightTotal += weight;
+      }
+      sample = weightTotal > 0 ? weightedSum / weightTotal : 0;
+    } else {
+      const sourcePosition = i * downsamplingRatio;
+      const sourceIndex = Math.floor(sourcePosition);
+      const fraction = sourcePosition - sourceIndex;
+      const left = sourceSamples[sourceIndex] ?? 0;
+      const right = sourceSamples[sourceIndex + 1] ?? left;
+      sample = left + (right - left) * fraction;
+    }
+    sample = Math.max(-1, Math.min(1, sample));
     samples[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
   }
 
@@ -70,7 +88,19 @@ export function encodePcmWav(sourceSamples: Float32Array, sourceSampleRate: numb
 }
 
 export function normalizeChunkDurationMs(durationMs: number): number {
-  return Math.max(1, Math.min(CHUNK_DURATION_MS, Math.round(durationMs)));
+  return Math.max(1, Math.min(MAX_SEGMENT_DURATION_MS, Math.round(durationMs)));
+}
+
+export function isSpeechFrame(rms: number, noiseFloor: number, speaking: boolean): boolean {
+  const threshold = Math.max(
+    speaking ? 0.0025 : 0.008,
+    noiseFloor * (speaking ? 1.1 : 1.5),
+  );
+  return rms >= threshold && (speaking || rms >= 0.015);
+}
+
+export function shouldFinalizeAudioBuffer(durationMs: number, silenceMs: number): boolean {
+  return durationMs >= MAX_SEGMENT_DURATION_MS || silenceMs >= SILENCE_FINALIZE_MS;
 }
 
 export function useGeminiTranscription({
@@ -91,7 +121,6 @@ export function useGeminiTranscription({
   const [supported, setSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const enabledRef = useRef(enabled);
   const speakingRef = useRef(speaking);
   const onStoredRef = useRef(onStored);
   const pendingRef = useRef<AudioChunk[]>([]);
@@ -101,7 +130,6 @@ export function useGeminiTranscription({
   const retryAfterRef = useRef(0);
   const flushRef = useRef<() => void>(() => {});
 
-  enabledRef.current = enabled;
   speakingRef.current = speaking;
   onStoredRef.current = onStored;
 
@@ -204,12 +232,13 @@ export function useGeminiTranscription({
     }
 
     let disposed = false;
-    let chunkTimer: ReturnType<typeof setInterval> | null = null;
     let firstSpeechAt: number | null = null;
-    let lastSpeechAt: number | null = null;
-    let speechDurationMs = 0;
+    let silenceStartedAt: number | null = null;
+    let noiseFloor = 0.001;
     let sampleChunks: Float32Array[] = [];
     let sampleCount = 0;
+    let preRollChunks: Float32Array[] = [];
+    let preRollSampleCount = 0;
     const stream = new MediaStream([audioTrack]);
     const AudioContextCtor = getAudioContextConstructor();
     if (!AudioContextCtor) {
@@ -243,38 +272,76 @@ export function useGeminiTranscription({
         samples.set(chunk, offset);
         offset += chunk.length;
       }
+      const durationMs = normalizeChunkDurationMs((sampleCount / context.sampleRate) * 1000);
       enqueue({
         audio: encodePcmWav(samples, context.sampleRate),
         startedAt: new Date(firstSpeechAt),
-        endedAt: new Date(lastSpeechAt ?? Date.now()),
-        durationMs: normalizeChunkDurationMs(speechDurationMs),
+        endedAt: new Date(firstSpeechAt + durationMs),
+        durationMs,
       });
       sampleChunks = [];
       sampleCount = 0;
       firstSpeechAt = null;
-      lastSpeechAt = null;
-      speechDurationMs = 0;
+      silenceStartedAt = null;
+      preRollChunks = [];
+      preRollSampleCount = 0;
+    };
+
+    const appendSamples = (samples: Float32Array) => {
+      const copy = new Float32Array(samples);
+      sampleChunks.push(copy);
+      sampleCount += copy.length;
     };
 
     processor.onaudioprocess = (event) => {
-      if (!speakingRef.current || disposed) return;
+      if (disposed) return;
       const input = event.inputBuffer.getChannelData(0);
-      sampleChunks.push(new Float32Array(input));
-      sampleCount += input.length;
       const now = Date.now();
-      if (firstSpeechAt === null) firstSpeechAt = now;
-      lastSpeechAt = now;
-      speechDurationMs += (input.length / context.sampleRate) * 1000;
+      let energy = 0;
+      for (let index = 0; index < input.length; index += 1) {
+        energy += input[index] * input[index];
+      }
+      const rms = Math.sqrt(energy / input.length);
+      const speechDetected = isSpeechFrame(rms, noiseFloor, speakingRef.current);
+      if (!speechDetected) noiseFloor = noiseFloor * 0.98 + rms * 0.02;
+
+      if (firstSpeechAt === null) {
+        if (speechDetected) {
+          firstSpeechAt = now - (preRollSampleCount / context.sampleRate) * 1000;
+          for (const chunk of preRollChunks) appendSamples(chunk);
+          appendSamples(input);
+          silenceStartedAt = null;
+        } else {
+          preRollChunks.push(new Float32Array(input));
+          preRollSampleCount += input.length;
+          const maxPreRollSamples = (PRE_ROLL_MS / 1000) * context.sampleRate;
+          while (preRollSampleCount > maxPreRollSamples && preRollChunks.length > 0) {
+            const removed = preRollChunks.shift();
+            if (removed) preRollSampleCount -= removed.length;
+          }
+          return;
+        }
+      } else {
+        appendSamples(input);
+        if (speechDetected) {
+          silenceStartedAt = null;
+        } else if (silenceStartedAt === null) {
+          silenceStartedAt = now;
+        }
+      }
+
+      const durationMs = (sampleCount / context.sampleRate) * 1000;
+      if (shouldFinalizeAudioBuffer(durationMs, silenceStartedAt === null ? 0 : now - silenceStartedAt)) {
+        flushSamples();
+      }
     };
     void context.resume().catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Microphone audio processing could not start.");
     });
-    chunkTimer = setInterval(flushSamples, CHUNK_DURATION_MS);
     setListening(true);
 
     return () => {
       disposed = true;
-      if (chunkTimer) clearInterval(chunkTimer);
       flushSamples();
       processor.onaudioprocess = null;
       source.disconnect();

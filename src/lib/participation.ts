@@ -252,7 +252,7 @@ export async function loadParticipation(
       },
     }),
     prisma.transcriptSegment.findMany({
-      where: { discussionId },
+      where: { discussionId, status: "FINAL" },
       orderBy: { startedAt: "asc" },
       select: {
         participantId: true,

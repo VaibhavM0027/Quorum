@@ -59,6 +59,11 @@ enum RecordingStatus {
   FAILED // capture ended without a usable file
 }
 
+enum TranscriptStatus {
+  PARTIAL
+  FINAL
+}
+
 /**
  * The life of one invitation the moderator offered to a participant.
  *
@@ -319,6 +324,10 @@ model TranscriptSegment {
   endedAt    DateTime
   durationMs Int      @default(0)
   wordCount  Int      @default(0)
+  status     TranscriptStatus @default(FINAL)
+  /// Stable client-generated key that lets a live draft become its final row.
+  streamId   String?
+  revision   Int      @default(0)
 
   relevance       Relevance @default(PENDING)
   relevanceScore  Float?
@@ -326,12 +335,14 @@ model TranscriptSegment {
   analysisSource  String    @default("pending")
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   discussion  Discussion            @relation(fields: [discussionId], references: [id], onDelete: Cascade)
   participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 
   @@index([discussionId, startedAt])
   @@index([participantId])
+  @@unique([participantId, streamId])
 }
 
 // ---------------------------------------------------------------------------

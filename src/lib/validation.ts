@@ -94,12 +94,20 @@ export const transcriptSegmentSchema = z.object({
   startedAt: z.coerce.date(),
   endedAt: z.coerce.date(),
   durationMs: z.coerce.number().int().min(0).max(600_000).default(0),
+  streamId: z.string().uuid().optional(),
+});
+
+export const transcriptPartialSchema = z.object({
+  text: z.string().trim().min(1, "Transcript chunk is empty").max(2000),
+  startedAt: z.coerce.date(),
+  streamId: z.string().uuid(),
+  revision: z.coerce.number().int().min(0).max(1_000_000),
 });
 
 export const transcriptAudioMetadataSchema = z.object({
   startedAt: z.coerce.date(),
   endedAt: z.coerce.date(),
-  durationMs: z.coerce.number().int().min(0).max(10_000),
+  durationMs: z.coerce.number().int().min(0).max(45_000),
   language: z.string().trim().min(2).max(35).optional(),
 });
 

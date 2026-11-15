@@ -25,7 +25,7 @@ export function usePresenceReporter(params: {
   /** The moderator's voice is being played back in this browser right now. */
   aiSpeaking: boolean;
   /**
-   * This browser is capturing microphone audio for Gemini transcription.
+   * This browser is capturing its microphone for transcription.
    *
    * It is reported separately from `speaking` because the two answer different
    * questions: audio activity says somebody is audible, whereas this says their

@@ -35,13 +35,23 @@ import LiveMonitorPanel, {
   type LiveStat,
   type ParticipantAction,
 } from "@/components/LiveMonitorPanel";
-import { useLivekitRoom } from "@/hooks/useLivekitRoom";
+import { useLivekitRoom, type TranscriptDraftMessage } from "@/hooks/useLivekitRoom";
+import {
+  useSpeechTranscription,
+  type FinalSegment,
+  type PartialSegment,
+} from "@/hooks/useSpeechTranscription";
 import { useGeminiTranscription } from "@/hooks/useGeminiTranscription";
 import { useAssistantVoice } from "@/hooks/useAssistantVoice";
 import { useRoomRecorder } from "@/hooks/useRoomRecorder";
 import { usePresenceReporter } from "@/hooks/usePresenceReporter";
 import { CONVERSATION_STATE_LABEL, coerceConversationState } from "@/lib/conversation-state";
 import { transcriptLog } from "@/lib/debug-log";
+import {
+  shouldApplyTranscriptDraft,
+  shouldClearTranscriptDraft,
+  shouldUseGeminiAudioFallback,
+} from "@/lib/transcript";
 
 export type RoomParticipant = {
   id: string;
@@ -91,6 +101,7 @@ type RoomUser = { id: string; name: string; email: string; role: "HOST" | "PARTI
 
 type TranscriptEntry = {
   id: string;
+  streamId: string | null;
   participantId: string;
   participantIdentity: string;
   speaker: string;
@@ -99,6 +110,9 @@ type TranscriptEntry = {
   startedAt: string;
   durationMs: number;
   wordCount: number;
+  status: "PARTIAL" | "FINAL";
+  revision: number;
+  updatedAt: string;
 };
 
 const POLL_MS = 5000;
@@ -133,7 +147,7 @@ type ParticipationEntry = {
   unansweredInvites: number;
   passCount: number;
   audioIssue: boolean;
-  /** This participant's audio is being captured for Gemini transcription. */
+  /** This participant's audio is currently being transcribed. */
   transcribing: boolean;
   score: number;
 };
@@ -186,11 +200,13 @@ export default function RoomClient({
   const myBreakoutRoom =
     discussion.breakoutEnabled && !discussion.isHost ? (myMembership?.breakoutRoom ?? null) : null;
   const transcriptRefreshRef = useRef<() => void>(() => {});
+  const transcriptDraftHandlerRef = useRef<(message: TranscriptDraftMessage) => void>(() => {});
   const media = useLivekitRoom(
     discussion.id,
     myBreakoutRoom,
     isLive && Boolean(participantId),
     () => transcriptRefreshRef.current(),
+    (message) => transcriptDraftHandlerRef.current(message),
   );
   const localAudioTile = media.tiles.find((tile) => tile.isLocal);
   const localSpeaking = localAudioTile?.speaking ?? false;
@@ -235,6 +251,7 @@ export default function RoomClient({
   // ---- Live transcription --------------------------------------------------
   const transcriptRef = useRef<HTMLOListElement | null>(null);
   const transcriptLoadVersionRef = useRef(0);
+  const transcriptUpdatedSinceRef = useRef<string | null>(null);
   const [segments, setSegments] = useState<TranscriptEntry[]>([]);
   const [consentBusy, setConsentBusy] = useState(false);
 
@@ -242,11 +259,32 @@ export default function RoomClient({
 
   const loadTranscript = useCallback(async () => {
     const requestVersion = ++transcriptLoadVersionRef.current;
+    const updatedSince = transcriptUpdatedSinceRef.current;
     try {
-      const res = await fetch(`/api/discussions/${initial.id}/transcript`, { cache: "no-store" });
+      const query = updatedSince ? `?updatedSince=${encodeURIComponent(updatedSince)}` : "";
+      const res = await fetch(`/api/discussions/${initial.id}/transcript${query}`, {
+        cache: "no-store",
+      });
       if (!res.ok) return;
-      const data = (await res.json()) as { segments: TranscriptEntry[] };
-      if (requestVersion === transcriptLoadVersionRef.current) setSegments(data.segments);
+      const data = (await res.json()) as { segments: TranscriptEntry[]; asOf: string };
+      if (requestVersion === transcriptLoadVersionRef.current) {
+        transcriptUpdatedSinceRef.current = data.asOf;
+        const changes = data.segments.map((entry) => ({
+          ...entry,
+          id: entry.streamId ?? entry.id,
+        }));
+        if (!updatedSince) {
+          setSegments(changes);
+        } else if (changes.length > 0) {
+          setSegments((current) => {
+            const merged = new Map(current.map((entry) => [entry.id, entry]));
+            for (const change of changes) merged.set(change.id, change);
+            return [...merged.values()].sort(
+              (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
+            );
+          });
+        }
+      }
     } catch {
       /* transient network errors are ignored; the next poll retries */
     }
@@ -263,6 +301,299 @@ export default function RoomClient({
     return () => clearInterval(timer);
   }, [discussion.transcriptionEnabled, discussion.status, loadTranscript]);
 
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const partialPersistenceRef = useRef<{
+    lastSentAt: number;
+    queued: PartialSegment | null;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({ lastSentAt: 0, queued: null, timer: null });
+  const finalQueueRef = useRef<FinalSegment[]>([]);
+  const finalPostingRef = useRef(false);
+  const finalRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finalRetryAttemptRef = useRef(0);
+  const finalRetryAfterRef = useRef(0);
+  const finalFlushRef = useRef<() => void>(() => {});
+
+  const acceptRealtimeDraft = useCallback(
+    (message: TranscriptDraftMessage) => {
+      transcriptLoadVersionRef.current += 1;
+      if (message.type === "partial-cleared") {
+        setSegments((current) =>
+          current.filter(
+            (entry) =>
+              entry.id !== message.streamId ||
+              !shouldClearTranscriptDraft(entry, message.revision),
+          ),
+        );
+        return;
+      }
+
+      const member = discussion.participants.find(
+        (candidate) => candidate.userId === message.participantIdentity,
+      );
+      const entry: TranscriptEntry = {
+        id: message.streamId,
+        streamId: message.streamId,
+        revision: message.revision,
+        participantId: member?.id ?? message.participantIdentity,
+        participantIdentity: message.participantIdentity,
+        speaker: member?.name || message.participantName,
+        speakerIsHost: member?.isHost ?? false,
+        text: message.text,
+        startedAt: message.startedAt,
+        durationMs: 0,
+        wordCount: message.text.trim().split(/\s+/).filter(Boolean).length,
+        status: "PARTIAL",
+        updatedAt: new Date().toISOString(),
+      };
+      setSegments((current) => {
+        const existing = current.find((item) => item.id === entry.id);
+        if (!shouldApplyTranscriptDraft(existing, entry.revision)) return current;
+        return [...current.filter((item) => item.id !== entry.id), entry].sort(
+          (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
+        );
+      });
+    },
+    [discussion.participants],
+  );
+  transcriptDraftHandlerRef.current = acceptRealtimeDraft;
+
+  const persistPartial = useCallback(
+    async (partial: PartialSegment) => {
+      const response = await fetch(`/api/discussions/${discussion.id}/transcript`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          streamId: partial.streamId,
+          revision: partial.revision,
+          text: partial.text,
+          startedAt: partial.startedAt.toISOString(),
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not synchronize the live transcript.");
+    },
+    [discussion.id],
+  );
+
+  const savePartial = useCallback(
+    (partial: PartialSegment) => {
+      void persistPartial(partial)
+        .then(() => {
+          const queued = partialPersistenceRef.current.queued;
+          if (
+            queued?.streamId === partial.streamId &&
+            queued.revision <= partial.revision
+          ) {
+            partialPersistenceRef.current.queued = null;
+          }
+        })
+        .catch((cause: unknown) => {
+          const queued = partialPersistenceRef.current.queued;
+          if (
+            !queued ||
+            queued.streamId !== partial.streamId ||
+            queued.revision < partial.revision
+          ) {
+            partialPersistenceRef.current.queued = partial;
+          }
+          setTranscriptionError(
+            cause instanceof Error ? cause.message : "Could not synchronize the live transcript.",
+          );
+        });
+    },
+    [persistPartial],
+  );
+
+  const handlePartial = useCallback(
+    (partial: PartialSegment) => {
+      transcriptLoadVersionRef.current += 1;
+      const persistence = partialPersistenceRef.current;
+      if (!partial.active) {
+        if (persistence.timer) clearTimeout(persistence.timer);
+        persistence.timer = null;
+        if (persistence.queued?.streamId === partial.streamId) persistence.queued = null;
+        media.publishTranscriptDraft({
+          type: "partial-cleared",
+          streamId: partial.streamId,
+          revision: partial.revision,
+        });
+        setSegments((current) =>
+          current.filter((entry) => !(entry.id === partial.streamId && entry.status === "PARTIAL")),
+        );
+        void fetch(
+          `/api/discussions/${discussion.id}/transcript?streamId=${encodeURIComponent(partial.streamId)}&revision=${partial.revision}`,
+          { method: "DELETE", keepalive: true },
+        )
+          .then(async (response) => {
+            if (response.ok) return;
+            const data = (await response.json().catch(() => ({}))) as { error?: string };
+            setTranscriptionError(data.error ?? "Could not clear the live transcript draft.");
+          })
+          .catch((cause: unknown) => {
+            setTranscriptionError(
+              cause instanceof Error ? cause.message : "Could not clear the live transcript draft.",
+            );
+          });
+        return;
+      }
+
+      const entry: TranscriptEntry = {
+        id: partial.streamId,
+        streamId: partial.streamId,
+        revision: partial.revision,
+        participantId: myMembership?.id ?? "",
+        participantIdentity: user.id,
+        speaker: myMembership?.name ?? user.name,
+        speakerIsHost: myMembership?.isHost ?? false,
+        text: partial.text,
+        startedAt: partial.startedAt.toISOString(),
+        durationMs: 0,
+        wordCount: partial.text.trim().split(/\s+/).filter(Boolean).length,
+        status: "PARTIAL",
+        updatedAt: new Date().toISOString(),
+      };
+      setSegments((current) =>
+        [...current.filter((item) => item.id !== entry.id), entry].sort(
+          (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
+        ),
+      );
+      media.publishTranscriptDraft({
+        type: "partial",
+        streamId: partial.streamId,
+        revision: partial.revision,
+        text: partial.text,
+        startedAt: partial.startedAt.toISOString(),
+      });
+
+      persistence.queued = partial;
+      const now = Date.now();
+      const waitMs = Math.max(0, 1800 - (now - persistence.lastSentAt));
+      if (waitMs === 0) {
+        persistence.lastSentAt = now;
+        persistence.queued = null;
+        savePartial(partial);
+      } else if (!persistence.timer) {
+        persistence.timer = setTimeout(() => {
+          persistence.timer = null;
+          const queued = persistence.queued;
+          persistence.queued = null;
+          if (!queued) return;
+          persistence.lastSentAt = Date.now();
+          savePartial(queued);
+        }, waitMs);
+      }
+    },
+    [discussion.id, media.publishTranscriptDraft, myMembership, savePartial, user.id, user.name],
+  );
+
+  const flushFinals = useCallback(async () => {
+    if (finalPostingRef.current || finalQueueRef.current.length === 0) return;
+    finalPostingRef.current = true;
+    try {
+      while (finalQueueRef.current.length > 0) {
+        const segment = finalQueueRef.current[0];
+        const response = await fetch(`/api/discussions/${discussion.id}/transcript`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            streamId: segment.streamId,
+            text: segment.text,
+            startedAt: segment.startedAt.toISOString(),
+            endedAt: segment.endedAt.toISOString(),
+            durationMs: segment.durationMs,
+          }),
+        });
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          retryAfterMs?: number;
+        };
+        if (!response.ok) {
+          if (response.status === 408 || response.status === 429 || response.status >= 500) {
+            finalRetryAfterRef.current = data.retryAfterMs ?? 0;
+            throw new Error(data.error ?? "Final transcript could not be saved.");
+          }
+          finalQueueRef.current.shift();
+          setTranscriptionError(data.error ?? "Final transcript could not be saved.");
+          continue;
+        }
+
+        finalQueueRef.current.shift();
+        finalRetryAttemptRef.current = 0;
+        finalRetryAfterRef.current = 0;
+        setTranscriptionError(null);
+        void loadTranscript();
+      }
+    } catch (cause) {
+      setTranscriptionError(
+        cause instanceof Error ? cause.message : "Final transcript could not be saved.",
+      );
+    } finally {
+      finalPostingRef.current = false;
+      if (finalQueueRef.current.length > 0 && !finalRetryTimerRef.current) {
+        const delay = Math.max(
+          finalRetryAfterRef.current,
+          Math.min(1000 * 2 ** finalRetryAttemptRef.current++, 15_000),
+        );
+        finalRetryTimerRef.current = setTimeout(() => {
+          finalRetryTimerRef.current = null;
+          finalFlushRef.current();
+        }, delay);
+      }
+    }
+  }, [discussion.id, loadTranscript]);
+  finalFlushRef.current = () => {
+    void flushFinals();
+  };
+
+  const submitFinal = useCallback(
+    (segment: FinalSegment) => {
+      transcriptLoadVersionRef.current += 1;
+      const entry: TranscriptEntry = {
+        id: segment.streamId,
+        streamId: segment.streamId,
+        participantId: myMembership?.id ?? "",
+        participantIdentity: user.id,
+        speaker: myMembership?.name ?? user.name,
+        speakerIsHost: myMembership?.isHost ?? false,
+        text: segment.text,
+        startedAt: segment.startedAt.toISOString(),
+        durationMs: segment.durationMs,
+        wordCount: segment.text.trim().split(/\s+/).filter(Boolean).length,
+        status: "FINAL",
+        revision: 0,
+        updatedAt: new Date().toISOString(),
+      };
+      setSegments((current) =>
+        [...current.filter((item) => item.id !== entry.id), entry].sort(
+          (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
+        ),
+      );
+      finalQueueRef.current.push(segment);
+      finalFlushRef.current();
+    },
+    [myMembership, user.id, user.name],
+  );
+
+  useEffect(() => {
+    const retryWhenOnline = () => {
+      finalFlushRef.current();
+      const persistence = partialPersistenceRef.current;
+      const queued = persistence.queued;
+      if (queued) {
+        persistence.queued = null;
+        persistence.lastSentAt = Date.now();
+        savePartial(queued);
+      }
+    };
+    window.addEventListener("online", retryWhenOnline);
+    return () => {
+      window.removeEventListener("online", retryWhenOnline);
+      if (finalRetryTimerRef.current) clearTimeout(finalRetryTimerRef.current);
+      if (partialPersistenceRef.current.timer) clearTimeout(partialPersistenceRef.current.timer);
+    };
+  }, [savePartial]);
+
   // Transcription follows the microphone, not the consent tick-box: a muted
   // participant must never have audio captured, and nothing may be transcribed
   // from a room the participant is only listening to.
@@ -272,21 +603,50 @@ export default function RoomClient({
     consented &&
     Boolean(participantId) &&
     media.micEnabled;
-  const speech = useGeminiTranscription({
+  const transcriptionActive =
+    shouldTranscribe &&
+    media.status === "connected" &&
+    localAudioTile?.audioTrack?.readyState === "live";
+  const browserSpeech = useSpeechTranscription({
+    enabled: transcriptionActive,
+    onSegment: submitFinal,
+    onPartial: handlePartial,
+  });
+  const useGeminiFallback = shouldUseGeminiAudioFallback(
+    browserSpeech.supported,
+    browserSpeech.error,
+  );
+  const geminiSpeech = useGeminiTranscription({
     discussionId: discussion.id,
-    enabled: shouldTranscribe,
+    enabled: transcriptionActive && useGeminiFallback,
     audioTrack: localAudioTile?.audioTrack ?? null,
     speaking: localSpeaking,
     onStored: () => transcriptRefreshRef.current(),
   });
+  const speech = useGeminiFallback ? geminiSpeech : browserSpeech;
   const canTranscribe =
-    shouldTranscribe && speech.supported && Boolean(localAudioTile?.audioTrack);
+    transcriptionActive &&
+    speech.listening &&
+    Boolean(localAudioTile?.audioTrack);
 
   // Keep the transcript pinned to the newest line.
   useEffect(() => {
     const el = transcriptRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [segments.length]);
+  }, [segments]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const staleBefore = Date.now() - 60_000;
+      setSegments((current) =>
+        current.filter(
+          (entry) =>
+            entry.status === "FINAL" || new Date(entry.updatedAt).getTime() >= staleBefore,
+        ),
+      );
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, []);
 
   /**
    * State, in the browser's own log, whether this participant is capturing.
@@ -301,14 +661,15 @@ export default function RoomClient({
       participantId,
       consented,
       micEnabled: media.micEnabled,
-      browserSupportsGeminiCapture: speech.supported,
+      browserSupportsStreamingSpeech: browserSpeech.supported,
+      supportsGeminiAudioCapture: geminiSpeech.supported,
       reason: canTranscribe
         ? undefined
         : !participantId
           ? "not a member of this discussion"
           : !consented
             ? "transcription consent not given"
-            : !speech.supported
+            : !browserSpeech.supported && !geminiSpeech.supported
               ? "browser cannot record microphone audio"
               : !localAudioTile?.audioTrack
                 ? "local microphone track is unavailable"
@@ -323,7 +684,8 @@ export default function RoomClient({
     isLive,
     media.micEnabled,
     participantId,
-    speech.supported,
+    browserSpeech.supported,
+    geminiSpeech.supported,
   ]);
 
   const setConsent = useCallback(
@@ -842,9 +1204,11 @@ export default function RoomClient({
         <div className="flex flex-wrap items-center gap-3 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm">
           <ShieldCheck className="h-4 w-4 text-warn" />
           <span className="text-warn">
-            {speech.supported
+          {browserSpeech.supported
+            ? "Live transcription is on. Your browser's speech-recognition service transcribes your microphone and shares live captions with the room. The session audio is also recorded for review. Your microphone stays off until you turn it on."
+            : geminiSpeech.supported
               ? "Live transcription is on. When your microphone is on, short audio clips are sent to Gemini for transcription and shared with the room. The session audio is also recorded for review. Your microphone stays off until you turn it on."
-              : "Live transcription is on and the session audio is recorded for review. This browser cannot record microphone audio for Gemini transcription; update your browser to use the live transcript."}
+              : "Live transcription is on and the session audio is recorded for review, but this browser does not support microphone transcription."}
           </span>
           <button
             type="button"
@@ -972,8 +1336,8 @@ export default function RoomClient({
               <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
                 <ScrollText className="h-4 w-4" /> Live transcript
                 <span className="ml-auto text-xs font-normal normal-case">
-                  {!speech.supported
-                    ? "browser not supported"
+                  {!browserSpeech.supported && !geminiSpeech.supported
+                    ? "transcription unavailable"
                     : canTranscribe
                       ? speech.listening
                         ? "listening"
@@ -988,26 +1352,48 @@ export default function RoomClient({
                 </span>
               </h2>
 
-              {speech.error && <p className="mt-2 text-xs text-danger">{speech.error}</p>}
-              {!speech.supported && (
+              {useGeminiFallback && browserSpeech.supported && !speech.error && (
                 <p className="mt-2 text-xs text-muted">
-                  Live transcription sends short microphone clips to Gemini. This browser does not
-                  support the required audio recording APIs, but you can still follow the shared transcript.
+                  Browser streaming recognition is unavailable; using Gemini audio transcription.
+                </p>
+              )}
+              {(speech.error || transcriptionError) && (
+                <p className="mt-2 text-xs text-danger">{speech.error ?? transcriptionError}</p>
+              )}
+              {!browserSpeech.supported && geminiSpeech.supported && (
+                <p className="mt-2 text-xs text-muted">
+                  This browser does not support streaming speech recognition. Short microphone clips
+                  are sent to Gemini and finalized when the audio is processed.
                 </p>
               )}
 
-              <ol ref={transcriptRef} className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+              <ol
+                ref={transcriptRef}
+                aria-live="polite"
+                className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1"
+              >
                 {segments.length === 0 ? (
                   <li className="text-sm text-muted">
                     {discussion.status === "LIVE" ? "No speech captured yet." : "The transcript appears once the discussion is live."}
                   </li>
                 ) : (
                   segments.map((entry) => (
-                    <li key={entry.id} className="text-sm">
+                    <li
+                      key={entry.id}
+                      className={`text-sm ${entry.status === "PARTIAL" ? "text-muted" : ""}`}
+                    >
                       <span className="mr-2 font-medium text-accent">
                         {entry.speaker}:
                       </span>
-                      <span className="text-ink">{entry.text}</span>
+                      <span className={entry.status === "PARTIAL" ? "italic text-ink/80" : "text-ink"}>
+                        {entry.text}
+                      </span>
+                      {entry.status === "PARTIAL" && (
+                        <span className="ml-2 inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-accent">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+                          Live
+                        </span>
+                      )}
                       <span className="ml-2 text-xs text-muted">
                         {new Date(entry.startedAt).toLocaleTimeString()}
                       </span>

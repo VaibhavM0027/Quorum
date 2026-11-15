@@ -307,7 +307,7 @@ export async function runAssistantTick(discussionId: string): Promise<AssistantT
   if (!discussion.aiEnabled) return { ...result, skipped: "ai-disabled" };
 
   const segments: TickSegment[] = await prisma.transcriptSegment.findMany({
-    where: { discussionId },
+    where: { discussionId, status: "FINAL" },
     orderBy: { startedAt: "asc" },
     select: {
       id: true,

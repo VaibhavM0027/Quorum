@@ -211,7 +211,12 @@ async function loadDiscussion(id: string) {
         orderBy: [{ isHost: "desc" }, { createdAt: "asc" }],
         include: { user: { select: { id: true, name: true, email: true } } },
       },
-      _count: { select: { segments: true, evaluations: true } },
+      _count: {
+        select: {
+          segments: { where: { status: "FINAL" } },
+          evaluations: true,
+        },
+      },
     },
   });
 }

@@ -18,7 +18,13 @@ export default async function DashboardPage() {
     orderBy: [{ status: "asc" }, { scheduledAt: "desc" }],
     include: {
       host: { select: { name: true } },
-      _count: { select: { participants: true, segments: true, evaluations: true } },
+      _count: {
+        select: {
+          participants: true,
+          segments: { where: { status: "FINAL" } },
+          evaluations: true,
+        },
+      },
     },
   });
 

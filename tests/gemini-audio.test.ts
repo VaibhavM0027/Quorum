@@ -10,14 +10,32 @@ vi.mock("@/lib/env", () => ({
   },
 }));
 
-import { encodePcmWav, normalizeChunkDurationMs } from "@/hooks/useGeminiTranscription";
+import {
+  encodePcmWav,
+  isSpeechFrame,
+  normalizeChunkDurationMs,
+  shouldFinalizeAudioBuffer,
+} from "@/hooks/useGeminiTranscription";
 import { transcribeAudioWithGemini } from "@/lib/gemini";
 
 describe("transcript audio metadata", () => {
-  it("rounds fractional capture durations and keeps them within the chunk limit", () => {
+  it("rounds fractional capture durations and keeps them within the utterance safety cap", () => {
     expect(normalizeChunkDurationMs(2400.5)).toBe(2401);
     expect(normalizeChunkDurationMs(0.2)).toBe(1);
-    expect(normalizeChunkDurationMs(6500.4)).toBe(6000);
+    expect(normalizeChunkDurationMs(45_500)).toBe(45_000);
+  });
+
+  it("uses adaptive energy and speaker activity to reject low-level background noise", () => {
+    expect(isSpeechFrame(0.006, 0.004, false)).toBe(false);
+    expect(isSpeechFrame(0.02, 0.004, false)).toBe(true);
+    expect(isSpeechFrame(0.006, 0.004, true)).toBe(true);
+  });
+
+  it("buffers through natural pauses and only splits continuous speech at the safety cap", () => {
+    expect(shouldFinalizeAudioBuffer(30_000, 0)).toBe(false);
+    expect(shouldFinalizeAudioBuffer(5_000, 1_199)).toBe(false);
+    expect(shouldFinalizeAudioBuffer(5_000, 1_200)).toBe(true);
+    expect(shouldFinalizeAudioBuffer(45_000, 0)).toBe(true);
   });
 });
 
@@ -36,6 +54,14 @@ describe("PCM WAV encoding", () => {
       0,
       32_767,
     ]);
+  });
+
+  it("averages samples when downsampling microphone audio to reduce aliasing", async () => {
+    const wav = encodePcmWav(new Float32Array([0.3, 0.6, 0.9]), 48_000);
+    const bytes = new DataView(await wav.arrayBuffer());
+
+    expect(bytes.getUint32(40, true)).toBe(2);
+    expect(bytes.getInt16(44, true)).toBe(Math.round(0.6 * 0x7fff));
   });
 });
 
