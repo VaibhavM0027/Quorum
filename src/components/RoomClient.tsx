@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import MediaTrack from "@/components/MediaTrack";
 import GdTable from "@/components/GdTable";
+import ThemeToggle from "@/components/ThemeToggle";
 import PreJoinLobby, { type PreJoinResult } from "@/components/PreJoinLobby";
 import BreakoutPanel, { type BreakoutCommand } from "@/components/BreakoutPanel";
 import LiveMonitorPanel, {
@@ -952,6 +953,7 @@ export default function RoomClient({
         </div>
 
         <span className="pill ml-auto">{discussion.status}</span>
+        <ThemeToggle />
         {isLive && (
           <span className="pill" title={media.status}>
             <Radio className="h-3.5 w-3.5" />
@@ -1118,7 +1120,6 @@ export default function RoomClient({
               <GdTable
                 participants={discussion.participants}
                 tiles={media.tiles}
-                maxSeats={discussion.maxParticipants}
                 selfUserId={user.id}
                 aiEnabled={discussion.aiEnabled}
                 aiSpeaking={effectiveAiSpeaking}

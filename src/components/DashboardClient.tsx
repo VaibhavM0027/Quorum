@@ -13,9 +13,11 @@ import {
   Square,
   ExternalLink,
   CalendarClock,
+  ChevronDown,
   Radio,
   Users2,
 } from "lucide-react";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export type DashboardUser = { id: string; name: string; email: string; role: "HOST" | "PARTICIPANT" };
 
@@ -127,6 +129,7 @@ export default function DashboardClient({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           <Link href="/" className="btn-ghost">
             Home
           </Link>
@@ -142,150 +145,176 @@ export default function DashboardClient({
         </p>
       )}
 
-      {user.role === "HOST" ? (
-        <section className="mb-8">
-          <div className="mb-4 flex items-center justify-between">
-            <h1 className="text-xl font-semibold tracking-tight">Your discussions</h1>
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={() => setShowForm((value) => !value)}
-            >
-              <Plus className="h-4 w-4" /> New discussion
-            </button>
-          </div>
-          {showForm && (
-            <CreateDiscussionForm
-              onCreated={(id) => {
-                setShowForm(false);
-                router.refresh();
-                void id;
-              }}
-              onError={setError}
-            />
+      <div
+        className={
+          user.role === "HOST" ? "dashboard-discussions-panel mb-8" : undefined
+        }
+      >
+        {user.role === "HOST" ? (
+          <section className="mb-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h1 className="text-xl font-semibold tracking-tight">Your discussions</h1>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => setShowForm((value) => !value)}
+              >
+                <Plus className="h-4 w-4" /> New discussion
+              </button>
+            </div>
+            {showForm && (
+              <CreateDiscussionForm
+                onCreated={(id) => {
+                  setShowForm(false);
+                  router.refresh();
+                  void id;
+                }}
+                onError={setError}
+              />
+            )}
+          </section>
+        ) : (
+          <section className="mb-8">
+            <h1 className="mb-4 text-xl font-semibold tracking-tight">Join a discussion</h1>
+            <form onSubmit={joinByCode} className="card flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex-1">
+                <label className="label" htmlFor="join-code">
+                  Join code
+                </label>
+                <input
+                  id="join-code"
+                  className="field font-mono uppercase tracking-widest"
+                  placeholder="K7QM2P"
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value)}
+                  maxLength={12}
+                  required
+                />
+              </div>
+              <button type="submit" className="btn-primary" disabled={joining}>
+                {joining ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Radio className="h-4 w-4" />
+                )}
+                Join
+              </button>
+            </form>
+          </section>
+        )}
+
+        <section>
+          {user.role === "HOST" && (
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
+              Scheduled and past sessions
+            </h2>
+          )}
+          {discussions.length === 0 ? (
+            <p className="card text-sm text-muted">
+              {user.role === "HOST"
+                ? "No discussions yet. Create your first one to get a join code and invite link."
+                : "You have not joined any discussions yet."}
+            </p>
+          ) : (
+            <ul className="grid gap-4 md:grid-cols-2">
+              {discussions.map((discussion) => (
+                <li
+                  key={discussion.id}
+                  tabIndex={0}
+                  className="dashboard-discussion-card card flex flex-col"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-medium leading-tight text-ink">{discussion.title}</h3>
+                      <p className="mt-1 line-clamp-2 text-sm text-muted">{discussion.topic}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className={`pill ${STATUS_STYLES[discussion.status]}`}>
+                        {discussion.status === "LIVE" && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                        )}
+                        {discussion.status}
+                      </span>
+                      <ChevronDown
+                        aria-hidden="true"
+                        className="dashboard-discussion-toggle h-4 w-4 text-muted"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="dashboard-discussion-details">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+                      <span className="flex items-center gap-1">
+                        <Users2 className="h-3.5 w-3.5" /> {discussion.participantCount} participants
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <CalendarClock className="h-3.5 w-3.5" />
+                        {new Date(discussion.scheduledAt).toLocaleString()} · {discussion.durationMin} min
+                      </span>
+                      {!discussion.isHost && <span>Host: {discussion.hostName}</span>}
+                    </div>
+
+                    <div className="mt-3 flex items-center gap-2 rounded-lg border border-line bg-panel-2 px-3 py-2">
+                      <span className="text-xs text-muted">Code</span>
+                      <span className="font-mono text-sm tracking-[0.2em] text-ink">
+                        {discussion.joinCode}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => copyInvite(discussion)}
+                        className="ml-auto text-muted transition hover:text-ink"
+                        title="Copy invite link"
+                      >
+                        {copied === discussion.id ? (
+                          <Check className="h-4 w-4 text-accent" />
+                        ) : (
+                          <Copy className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Link href={`/room/${discussion.id}`} className="btn-ghost">
+                        <ExternalLink className="h-4 w-4" /> Open room
+                      </Link>
+                      {discussion.isHost && discussion.status === "SCHEDULED" && (
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          onClick={() => control(discussion, "start")}
+                          disabled={busyId === discussion.id}
+                        >
+                          {busyId === discussion.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Play className="h-4 w-4" />
+                          )}
+                          Start
+                        </button>
+                      )}
+                      {discussion.isHost && discussion.status === "LIVE" && (
+                        <button
+                          type="button"
+                          className="btn-danger"
+                          onClick={() => control(discussion, "end")}
+                          disabled={busyId === discussion.id}
+                        >
+                          {busyId === discussion.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Square className="h-4 w-4" />
+                          )}
+                          End
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
         </section>
-      ) : (
-        <section className="mb-8">
-          <h1 className="mb-4 text-xl font-semibold tracking-tight">Join a discussion</h1>
-          <form onSubmit={joinByCode} className="card flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1">
-              <label className="label" htmlFor="join-code">
-                Join code
-              </label>
-              <input
-                id="join-code"
-                className="field font-mono uppercase tracking-widest"
-                placeholder="K7QM2P"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value)}
-                maxLength={12}
-                required
-              />
-            </div>
-            <button type="submit" className="btn-primary" disabled={joining}>
-              {joining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Radio className="h-4 w-4" />}
-              Join
-            </button>
-          </form>
-        </section>
-      )}
-
-      <section>
-        {user.role === "HOST" && (
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
-            Scheduled and past sessions
-          </h2>
-        )}
-        {discussions.length === 0 ? (
-          <p className="card text-sm text-muted">
-            {user.role === "HOST"
-              ? "No discussions yet. Create your first one to get a join code and invite link."
-              : "You have not joined any discussions yet."}
-          </p>
-        ) : (
-          <ul className="grid gap-4 md:grid-cols-2">
-            {discussions.map((discussion) => (
-              <li key={discussion.id} className="card flex flex-col gap-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="font-medium leading-tight text-ink">{discussion.title}</h3>
-                    <p className="mt-1 line-clamp-2 text-sm text-muted">{discussion.topic}</p>
-                  </div>
-                  <span className={`pill shrink-0 ${STATUS_STYLES[discussion.status]}`}>
-                    {discussion.status === "LIVE" && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
-                    {discussion.status}
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-                  <span className="flex items-center gap-1">
-                    <Users2 className="h-3.5 w-3.5" /> {discussion.participantCount} participants
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <CalendarClock className="h-3.5 w-3.5" />
-                    {new Date(discussion.scheduledAt).toLocaleString()} · {discussion.durationMin} min
-                  </span>
-                  {!discussion.isHost && <span>Host: {discussion.hostName}</span>}
-                </div>
-
-                <div className="flex items-center gap-2 rounded-lg border border-line bg-panel-2 px-3 py-2">
-                  <span className="text-xs text-muted">Code</span>
-                  <span className="font-mono text-sm tracking-[0.2em] text-ink">{discussion.joinCode}</span>
-                  <button
-                    type="button"
-                    onClick={() => copyInvite(discussion)}
-                    className="ml-auto text-muted transition hover:text-ink"
-                    title="Copy invite link"
-                  >
-                    {copied === discussion.id ? (
-                      <Check className="h-4 w-4 text-accent" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                  </button>
-                </div>
-
-                <div className="mt-auto flex flex-wrap gap-2">
-                  <Link href={`/room/${discussion.id}`} className="btn-ghost">
-                    <ExternalLink className="h-4 w-4" /> Open room
-                  </Link>
-                  {discussion.isHost && discussion.status === "SCHEDULED" && (
-                    <button
-                      type="button"
-                      className="btn-primary"
-                      onClick={() => control(discussion, "start")}
-                      disabled={busyId === discussion.id}
-                    >
-                      {busyId === discussion.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Play className="h-4 w-4" />
-                      )}
-                      Start
-                    </button>
-                  )}
-                  {discussion.isHost && discussion.status === "LIVE" && (
-                    <button
-                      type="button"
-                      className="btn-danger"
-                      onClick={() => control(discussion, "end")}
-                      disabled={busyId === discussion.id}
-                    >
-                      {busyId === discussion.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Square className="h-4 w-4" />
-                      )}
-                      End
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      </div>
     </div>
   );
 }

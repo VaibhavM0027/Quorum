@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Loader2, Radio, Users2, Clock } from "lucide-react";
+import ThemeToggle from "@/components/ThemeToggle";
 
 type Preview = {
   id: string;
@@ -90,11 +91,14 @@ export default function JoinClient({
           </span>
           <span className="text-lg font-semibold tracking-tight">Quorum</span>
         </Link>
-        {!signedIn && (
-          <Link href="/login" className="text-sm text-muted hover:text-ink">
-            Sign in
-          </Link>
-        )}
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
+          {!signedIn && (
+            <Link href="/login" className="text-sm text-muted hover:text-ink">
+              Sign in
+            </Link>
+          )}
+        </div>
       </header>
 
       <h1 className="mb-2 text-2xl font-semibold tracking-tight">Join a group discussion</h1>

@@ -10,6 +10,12 @@ import {
   GaugeCircle,
 } from "lucide-react";
 import SystemStatus from "@/components/SystemStatus";
+import ThemeToggle from "@/components/ThemeToggle";
+import TextType from "@/components/TextType";
+import HomeInteractiveCard from "@/components/HomeInteractiveCard";
+import StrokeText from "@/components/StrokeText";
+
+const HOME_HEADLINE = "Run online group discussions that evaluate themselves.";
 
 const FEATURES = [
   {
@@ -56,12 +62,35 @@ export default function HomePage() {
     <main className="mx-auto max-w-6xl px-5 py-12">
       <header className="mb-12 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-2">
-          <span className="grid h-9 w-9 place-items-center rounded-lg bg-accent text-lg font-bold text-[#06170f]">
+          <span className="grid h-11 w-11 place-items-center rounded-lg bg-accent text-xl font-bold text-[#06170f]">
             Q
           </span>
-          <span className="text-lg font-semibold tracking-tight">Quorum</span>
+          <StrokeText
+            text="QUORUM"
+            strokeColor="#A78BFA"
+            strokeStyle="solid"
+            strokeWidth={0.9}
+            dashLength={10}
+            drawDuration={1.6}
+            fillDelay={0.2}
+            stagger={0.05}
+            ease="power2.out"
+            trigger="mount"
+            fillMode="wipe"
+            wipeFrom="left"
+            fontSize={36}
+            fontWeight={600}
+            letterSpacing={-1.5}
+            marching={false}
+            hoverRedraw
+            shadow={false}
+            fillColor={null}
+            shadowColor={null}
+            className="text-ink leading-none"
+          />
         </div>
         <nav className="flex items-center gap-2">
+          <ThemeToggle />
           <Link href="/join" className="btn-ghost">
             Join a GD
           </Link>
@@ -76,8 +105,24 @@ export default function HomePage() {
           <p className="pill mb-4">
             <ShieldCheck className="h-3.5 w-3.5" /> Host-controlled • Consent-based transcription
           </p>
-          <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
-            Run online group discussions that evaluate themselves.
+          <h1 className="relative min-h-[3.5em] text-4xl font-semibold leading-tight tracking-tight sm:min-h-[2.2em] sm:text-5xl">
+            <span className="sr-only">{HOME_HEADLINE}</span>
+            <span aria-hidden className="invisible block">
+              {HOME_HEADLINE}
+            </span>
+            <TextType
+              text={[HOME_HEADLINE]}
+              typingSpeed={75}
+              pauseDuration={1500}
+              deletingSpeed={50}
+              deleteMode="backspace"
+              typeEffect="fade"
+              mistakes={0.2}
+              cursorStyle="bar"
+              cursorGlide
+              showCursor
+              className="absolute inset-0 text-accent"
+            />
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-relaxed text-muted">
             Quorum hosts a live audio/video discussion, transcribes every speaker, keeps the
@@ -94,26 +139,30 @@ export default function HomePage() {
           </div>
         </div>
 
-        <aside className="card">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
-            System status
-          </h2>
-          <SystemStatus />
-          <p className="mt-4 border-t border-line pt-3 text-xs leading-relaxed text-muted">
-            Missing a service? Add the matching key to <code className="text-ink">.env</code> and
-            restart the dev server.
-          </p>
+        <aside>
+          <HomeInteractiveCard className="card h-full">
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
+              System status
+            </h2>
+            <SystemStatus />
+            <p className="mt-4 border-t border-line pt-3 text-xs leading-relaxed text-muted">
+              Missing a service? Add the matching key to <code className="text-ink">.env</code> and
+              restart the dev server.
+            </p>
+          </HomeInteractiveCard>
         </aside>
       </section>
 
       <section className="mt-16">
         <h2 className="mb-6 text-2xl font-semibold tracking-tight">What it does</h2>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {FEATURES.map(({ icon: Icon, title, body }) => (
-            <article key={title} className="card">
-              <Icon className="mb-3 h-5 w-5 text-accent" />
-              <h3 className="mb-1 font-medium text-ink">{title}</h3>
-              <p className="text-sm leading-relaxed text-muted">{body}</p>
+          {FEATURES.map(({ icon: Icon, title, body }, index) => (
+            <article key={title} className="h-full">
+              <HomeInteractiveCard className="card h-full" revealDelay={index * 45}>
+                <Icon className="mb-3 h-5 w-5 text-accent transition-transform duration-200" />
+                <h3 className="mb-1 font-medium text-ink">{title}</h3>
+                <p className="text-sm leading-relaxed text-muted">{body}</p>
+              </HomeInteractiveCard>
             </article>
           ))}
         </div>
@@ -122,11 +171,13 @@ export default function HomePage() {
       <section className="mt-16">
         <h2 className="mb-6 text-2xl font-semibold tracking-tight">How a session runs</h2>
         <ol className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {STEPS.map((step) => (
-            <li key={step.n} className="card">
-              <span className="font-mono text-xs text-accent">{step.n}</span>
-              <h3 className="mt-2 font-medium text-ink">{step.title}</h3>
-              <p className="mt-1 text-sm leading-relaxed text-muted">{step.body}</p>
+          {STEPS.map((step, index) => (
+            <li key={step.n} className="h-full">
+              <HomeInteractiveCard className="card h-full" revealDelay={index * 55}>
+                <span className="font-mono text-xs text-accent">{step.n}</span>
+                <h3 className="mt-2 font-medium text-ink">{step.title}</h3>
+                <p className="mt-1 text-sm leading-relaxed text-muted">{step.body}</p>
+              </HomeInteractiveCard>
             </li>
           ))}
         </ol>

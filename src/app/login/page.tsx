@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import AuthPanel from "@/components/AuthPanel";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export const dynamic = "force-dynamic";
 
@@ -26,9 +27,12 @@ export default async function LoginPage({
           </span>
           <span className="text-lg font-semibold tracking-tight">Quorum</span>
         </Link>
-        <Link href="/" className="text-sm text-muted hover:text-ink">
-          Back to home
-        </Link>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <Link href="/" className="text-sm text-muted hover:text-ink">
+            Back to home
+          </Link>
+        </div>
       </header>
 
       <AuthPanel nextPath={nextPath} />

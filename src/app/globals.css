@@ -2,21 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ---------------------------------------------------------------------------
-   Design tokens — a calm, professional dark theme.
-   --------------------------------------------------------------------------- */
+/* Light mode is the default; dark mode is opt-in and remembered per browser. */
 :root {
-  --bg: #0e1512;
-  --panel: #15211c;
-  --panel-2: #1b2a23;
-  --input: #223029;
-  --border: #2b3d34;
-  --text: #f2f5f2;
-  --muted: #93a89c;
-  --accent: #34d399;
-  --accent-2: #60a5fa;
-  --danger: #f87171;
-  --warn: #fbbf24;
+  color-scheme: light;
+  --bg: #f5f7f6;
+  --panel: #ffffff;
+  --panel-2: #edf1ef;
+  --input: #ffffff;
+  --border: #d7dfdb;
+  --text: #1c2a24;
+  --muted: #65756d;
+  --accent: #187653;
+  --accent-2: #356c8a;
+  --danger: #b63d3d;
+  --warn: #956218;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121916;
+  --panel: #1b2520;
+  --panel-2: #232f29;
+  --input: #202b25;
+  --border: #35433b;
+  --text: #edf2ee;
+  --muted: #a0afa6;
+  --accent: #55b88b;
+  --accent-2: #7aaed0;
+  --danger: #ed8585;
+  --warn: #e6b75f;
 }
 
 * {
@@ -31,6 +45,226 @@ body {
 
 body {
   -webkit-font-smoothing: antialiased;
+}
+
+@keyframes text-type-fade {
+  from {
+    opacity: 0;
+    transform: translateY(0.08em);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes text-cursor-glide {
+  from {
+    opacity: 0.35;
+    transform: translateX(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes stroke-text-draw {
+  from {
+    clip-path: var(--stroke-wipe-start);
+  }
+  to {
+    clip-path: var(--stroke-wipe-end);
+  }
+}
+
+@keyframes stroke-text-hover-draw {
+  from {
+    clip-path: var(--stroke-wipe-start);
+  }
+  to {
+    clip-path: var(--stroke-wipe-end);
+  }
+}
+
+@keyframes stroke-text-fill {
+  from {
+    clip-path: var(--stroke-wipe-start);
+  }
+  to {
+    clip-path: var(--stroke-wipe-end);
+  }
+}
+
+@keyframes stroke-text-hover-fill {
+  from {
+    clip-path: var(--stroke-wipe-start);
+  }
+  to {
+    clip-path: var(--stroke-wipe-end);
+  }
+}
+
+@keyframes stroke-text-fill-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.stroke-text {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.stroke-text__visual {
+  display: inline-flex;
+  white-space: inherit;
+}
+
+.stroke-text__character {
+  position: relative;
+  display: inline-block;
+}
+
+.stroke-text__outline,
+.stroke-text__fill {
+  display: inline-block;
+}
+
+.stroke-text__outline {
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  -webkit-text-stroke: var(--stroke-width) var(--stroke-color);
+  clip-path: var(--stroke-wipe-start);
+  pointer-events: none;
+}
+
+.stroke-text__fill {
+  color: var(--stroke-fill);
+  clip-path: var(--stroke-wipe-start);
+}
+
+.stroke-text--trigger-mount .stroke-text__outline {
+  animation: stroke-text-draw var(--stroke-duration) var(--stroke-ease) both;
+  animation-delay: var(--stroke-character-delay);
+}
+
+.stroke-text--trigger-mount.stroke-text--fill-wipe .stroke-text__fill {
+  animation: stroke-text-fill var(--stroke-duration) var(--stroke-ease) both;
+  animation-delay: var(--stroke-character-fill-delay);
+}
+
+.stroke-text--trigger-mount.stroke-text--fill-fade .stroke-text__fill {
+  clip-path: none;
+  animation: stroke-text-fill-fade var(--stroke-duration) var(--stroke-ease) both;
+  animation-delay: var(--stroke-character-fill-delay);
+}
+
+.stroke-text--trigger-mount.stroke-text--fill-none .stroke-text__fill {
+  clip-path: none;
+}
+
+.stroke-text--trigger-hover .stroke-text__outline,
+.stroke-text--trigger-hover .stroke-text__fill {
+  clip-path: var(--stroke-wipe-start);
+}
+
+.stroke-text--trigger-hover:hover .stroke-text__outline {
+  animation: stroke-text-hover-draw var(--stroke-duration) var(--stroke-ease) both;
+  animation-delay: var(--stroke-character-delay);
+}
+
+.stroke-text--trigger-hover:hover.stroke-text--fill-wipe .stroke-text__fill {
+  animation: stroke-text-hover-fill var(--stroke-duration) var(--stroke-ease) both;
+  animation-delay: var(--stroke-character-fill-delay);
+}
+
+.stroke-text--trigger-hover:hover.stroke-text--fill-fade .stroke-text__fill {
+  clip-path: none;
+  animation: stroke-text-fill-fade var(--stroke-duration) var(--stroke-ease) both;
+  animation-delay: var(--stroke-character-fill-delay);
+}
+
+.stroke-text--trigger-hover:hover.stroke-text--fill-none .stroke-text__fill {
+  clip-path: none;
+}
+
+.stroke-text--hover-redraw:hover:not(.stroke-text--trigger-hover) .stroke-text__outline {
+  animation-name: stroke-text-hover-draw;
+}
+
+.stroke-text--hover-redraw:hover.stroke-text--fill-wipe:not(.stroke-text--trigger-hover) .stroke-text__fill {
+  animation-name: stroke-text-hover-fill;
+}
+
+.stroke-text--shadow .stroke-text__fill {
+  text-shadow: 0 0 0.3em var(--stroke-shadow-color);
+}
+
+.animate-text-type-fade {
+  animation: text-type-fade 120ms ease-out both;
+}
+
+.animate-text-cursor-glide {
+  animation: text-cursor-glide 100ms ease-out;
+}
+
+@keyframes home-card-enter {
+  from {
+    opacity: 0.65;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-text-type-fade,
+  .animate-text-cursor-glide,
+  .home-interactive-card[data-revealed="true"] {
+    animation: none;
+  }
+
+  .home-interactive-card {
+    transition: none;
+    transform: none;
+  }
+
+  .dashboard-discussions-panel,
+  .dashboard-discussion-card,
+  .dashboard-discussion-details,
+  .dashboard-discussion-toggle,
+  .dashboard-discussions-panel .card {
+    transition: none;
+  }
+
+  .dashboard-discussion-card,
+  .dashboard-discussion-details,
+  .dashboard-discussions-panel .card {
+    transform: none;
+  }
+}
+
+@media (hover: none) {
+  .dashboard-discussion-details {
+    max-height: 22rem;
+    margin-top: 0.75rem;
+    opacity: 1;
+    transform: none;
+    visibility: visible;
+  }
+
+  .stroke-text__outline,
+  .stroke-text__fill {
+    animation: none !important;
+    clip-path: none;
+  }
 }
 
 /* Form controls inherit the dark palette so text is always legible. */
@@ -48,16 +282,219 @@ textarea::placeholder {
 
 @layer components {
   .card {
-    @apply rounded-xl border border-line bg-panel p-5;
+    @apply rounded-lg border border-line bg-panel p-5;
+  }
+
+  .dashboard-discussions-panel {
+    @apply rounded-lg border border-line bg-panel p-5;
+    transition:
+      border-color 180ms ease,
+      box-shadow 180ms ease,
+      background-color 180ms ease;
+  }
+
+  .dashboard-discussions-panel:hover {
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--text) 9%, transparent);
+  }
+
+  .dashboard-discussions-panel .card:not(.dashboard-discussion-card) {
+    transition:
+      transform 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease;
+  }
+
+  .dashboard-discussions-panel .card:not(.dashboard-discussion-card):hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--text) 10%, transparent);
+  }
+
+  .dashboard-discussion-card {
+    outline: none;
+    transition:
+      transform 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease;
+  }
+
+  .dashboard-discussion-card:hover,
+  .dashboard-discussion-card:focus-visible,
+  .dashboard-discussion-card:focus-within {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--text) 10%, transparent);
+  }
+
+  .dashboard-discussion-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  .dashboard-discussion-toggle {
+    transition:
+      color 180ms ease,
+      transform 180ms ease;
+  }
+
+  .dashboard-discussion-card:hover .dashboard-discussion-toggle,
+  .dashboard-discussion-card:focus-visible .dashboard-discussion-toggle,
+  .dashboard-discussion-card:focus-within .dashboard-discussion-toggle {
+    color: var(--accent);
+    transform: rotate(180deg);
+  }
+
+  .dashboard-discussion-details {
+    max-height: 0;
+    margin-top: 0;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(-5px);
+    visibility: hidden;
+    transition:
+      max-height 220ms ease,
+      margin-top 180ms ease,
+      opacity 140ms ease,
+      transform 180ms ease,
+      visibility 0s linear 180ms;
+  }
+
+  .dashboard-discussion-card:hover .dashboard-discussion-details,
+  .dashboard-discussion-card:focus-visible .dashboard-discussion-details,
+  .dashboard-discussion-card:focus-within .dashboard-discussion-details {
+    max-height: 22rem;
+    margin-top: 0.75rem;
+    opacity: 1;
+    transform: translateY(0);
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .home-interactive-card {
+    --home-card-x: 50%;
+    --home-card-y: 50%;
+    --home-card-tilt-x: 0deg;
+    --home-card-tilt-y: 0deg;
+    --home-card-lift: 0px;
+    position: relative;
+    isolation: isolate;
+    transform:
+      perspective(900px)
+      rotateX(var(--home-card-tilt-x))
+      rotateY(var(--home-card-tilt-y))
+      translateY(var(--home-card-lift));
+    transition:
+      transform 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease;
+  }
+
+  .home-interactive-card::before {
+    position: absolute;
+    z-index: -1;
+    inset: 0;
+    border-radius: inherit;
+    background: radial-gradient(
+      circle at var(--home-card-x) var(--home-card-y),
+      var(--accent),
+      transparent 62%
+    );
+    content: "";
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+
+  .home-interactive-card[data-revealed="true"] {
+    animation: home-card-enter 440ms ease-out both;
+    animation-delay: var(--home-card-delay, 0ms);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .home-interactive-card:hover {
+      --home-card-lift: -4px;
+      border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+      box-shadow: 0 12px 26px color-mix(in srgb, var(--text) 10%, transparent);
+    }
+
+    .home-interactive-card:hover::before {
+      opacity: 0.055;
+    }
+
+    .home-interactive-card:hover svg {
+      transform: translateY(-2px);
+    }
   }
 
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition
            disabled:cursor-not-allowed disabled:opacity-50;
+    --specular-tint: #ffffff;
+    --specular-line: #ffffff;
+    --specular-fade: 34%;
+    --specular-size: 10%;
+    --specular-glow: 0.55;
+    --specular-thickness: 1px;
+    --specular-activity: 0.12;
+    --specular-opacity: 2.16%;
+    background-image: radial-gradient(
+      circle at var(--specular-x, 50%) var(--specular-y, 50%),
+      color-mix(in srgb, var(--specular-tint) var(--specular-opacity), transparent) var(--specular-size),
+      transparent var(--specular-fade)
+    );
+    box-shadow:
+      inset 0 0 0 var(--specular-thickness)
+        color-mix(in srgb, var(--specular-line) var(--specular-opacity), transparent),
+      0 0 calc(var(--specular-glow) * 12px * var(--specular-activity))
+        color-mix(in srgb, var(--specular-tint) var(--specular-opacity), transparent);
+    transition:
+      background-color 160ms ease,
+      box-shadow 160ms ease,
+      color 160ms ease,
+      filter 160ms ease;
+  }
+
+  button {
+    --specular-tint: #ffffff;
+    --specular-line: #ffffff;
+    --specular-fade: 34%;
+    --specular-size: 10%;
+    --specular-glow: 0.55;
+    --specular-thickness: 1px;
+    --specular-activity: 0.12;
+    --specular-opacity: 2.16%;
+    background-image: radial-gradient(
+      circle at var(--specular-x, 50%) var(--specular-y, 50%),
+      color-mix(in srgb, var(--specular-tint) var(--specular-opacity), transparent) var(--specular-size),
+      transparent var(--specular-fade)
+    );
+    box-shadow:
+      inset 0 0 0 var(--specular-thickness)
+        color-mix(in srgb, var(--specular-line) var(--specular-opacity), transparent),
+      0 0 calc(var(--specular-glow) * 12px * var(--specular-activity))
+        color-mix(in srgb, var(--specular-tint) var(--specular-opacity), transparent);
+    transition:
+      background-color 160ms ease,
+      box-shadow 160ms ease,
+      color 160ms ease,
+      filter 160ms ease;
+  }
+
+  button:focus-visible,
+  .btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .specular-button {
+    position: relative;
+    isolation: isolate;
+    border-style: solid;
   }
 
   .btn-primary {
-    @apply btn bg-accent text-[#06170f] hover:brightness-110;
+    @apply btn bg-accent text-white hover:brightness-95;
   }
 
   .btn-ghost {
@@ -69,7 +506,7 @@ textarea::placeholder {
   }
 
   .field {
-    @apply w-full rounded-lg border border-line bg-input px-3 py-2 text-sm text-ink
+    @apply w-full rounded-md border border-line bg-input px-3 py-2 text-sm text-ink
            outline-none focus:border-accent;
   }
 
@@ -82,7 +519,7 @@ textarea::placeholder {
   }
 }
 
-/* Thin, dark scrollbars for panels. */
+/* Thin scrollbars that follow the selected surface palette. */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -95,5 +532,5 @@ textarea::placeholder {
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a5145;
+  background: var(--muted);
 }

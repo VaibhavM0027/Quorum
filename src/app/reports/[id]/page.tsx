@@ -16,6 +16,7 @@ import { formatBytes } from "@/lib/recordings";
 import { scoreBand } from "@/lib/rubric";
 import ReportCharts from "@/components/ReportCharts";
 import RunEvaluationButton from "@/components/RunEvaluationButton";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +66,7 @@ export default async function ReportsPage({ params }: { params: Promise<{ id: st
             {report.discussion.topic} · Host {report.discussion.hostName} · {report.discussion.status}
           </p>
         </div>
+        <ThemeToggle />
         <a
           href={`/api/discussions/${report.discussion.id}/transcript?format=csv`}
           className="btn-ghost ml-auto"

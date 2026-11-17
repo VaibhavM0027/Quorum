@@ -16,6 +16,7 @@ import {
   Square,
   Volume2,
 } from "lucide-react";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export type PreJoinResult = {
   micEnabled: boolean;
@@ -289,7 +290,10 @@ export default function PreJoinLobby({
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-4xl flex-col justify-center px-5 py-8">
-      <div className="card border-accent/30 bg-panel shadow-2xl">
+      <div className="mb-3 flex justify-end">
+        <ThemeToggle />
+      </div>
+      <div className="card">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
           <div>
             <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-accent">

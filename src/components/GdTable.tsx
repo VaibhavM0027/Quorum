@@ -20,6 +20,7 @@ export type SeatPerson = {
   userId: string;
   name: string;
   isHost: boolean;
+  joinedAt: string | null;
   seatNumber: number | null;
   removed: boolean;
   leftAt: string | null;
@@ -36,24 +37,16 @@ export type SeatMedia = {
 };
 
 function tileWidthPercent(total: number): number {
-  if (total <= 6) return 21;
-  if (total <= 10) return 16.5;
-  if (total <= 16) return 13;
+  if (total <= 4) return 17;
+  if (total <= 8) return 14.5;
+  if (total <= 14) return 12;
   if (total <= 22) return 10;
   return 8.5;
-}
-
-function plateWidthPercent(total: number): number {
-  if (total <= 10) return 9.5;
-  if (total <= 16) return 7.5;
-  if (total <= 22) return 5.8;
-  return 4.8;
 }
 
 export default function GdTable({
   participants,
   tiles,
-  maxSeats,
   selfUserId,
   aiEnabled = true,
   aiSpeaking = false,
@@ -65,7 +58,6 @@ export default function GdTable({
 }: {
   participants: SeatPerson[];
   tiles: SeatMedia[];
-  maxSeats: number;
   selfUserId: string;
   aiEnabled?: boolean;
   aiSpeaking?: boolean;
@@ -79,25 +71,19 @@ export default function GdTable({
   const normalizedState = coerceConversationState(conversationState);
   const aiThinking = normalizedState === "AI_THINKING";
 
-  const seatHolders = new Map<number, SeatPerson>();
-  let host: SeatPerson | null = null;
-  for (const person of participants) {
-    if (person.removed) continue;
-    if (person.isHost) {
-      host = host ?? person;
-      continue;
-    }
-    if (person.seatNumber !== null) seatHolders.set(person.seatNumber, person);
-  }
-
-  const seats = Array.from({ length: maxSeats }, (_, index) => index + 1);
-  const tileWidth = tileWidthPercent(maxSeats);
-  const plateWidth = plateWidthPercent(maxSeats);
-  const showNames = maxSeats <= 12;
-  const headPlate = headPosition(0.62);
+  const seatedParticipants = participants
+    .filter((person) => !person.removed && !person.leftAt && person.joinedAt && !person.isHost)
+    .sort((a, b) => (a.seatNumber ?? Number.MAX_SAFE_INTEGER) - (b.seatNumber ?? Number.MAX_SAFE_INTEGER));
+  const host =
+    participants.find((person) => person.isHost && !person.removed && !person.leftAt && person.joinedAt) ??
+    null;
+  const seatCount = seatedParticipants.length;
+  const tableOccupancy = seatCount + Number(Boolean(host));
+  const tileWidth = tileWidthPercent(tableOccupancy);
+  const chairWidth = Math.max(tileWidth * 1.12, 8);
 
   return (
-    <div className="card overflow-hidden border-line/90 bg-gradient-to-b from-panel to-bg/95">
+    <div className="card overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
@@ -114,8 +100,8 @@ export default function GdTable({
               <PauseCircle className="h-3.5 w-3.5" /> Meeting paused
             </span>
           ) : aiSpeaking ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/20 px-2.5 py-1 font-medium text-accent shadow-[0_0_16px_rgba(52,211,153,0.25)]">
-              <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-accent/50 bg-accent/10 px-2.5 py-1 font-medium text-accent">
+              <span className="h-2 w-2 rounded-full bg-accent" />
               AI Moderator Speaking · Mics Locked
             </span>
           ) : (
@@ -129,37 +115,91 @@ export default function GdTable({
 
       {/* Physical round-table stage (desktop & tablet) */}
       <div className="relative mx-auto mt-4 hidden min-h-[340px] w-full max-w-4xl sm:block sm:aspect-[16/10]">
-        {/* Soft conference-room floor aura */}
+        {/* Upholstered chairs sit behind the table and move with each live seat. */}
+        {seatedParticipants.map((person, index) => {
+          const position = seatPosition(index, seatCount, 1.14);
+          const angle = Math.atan2((position.top - 50) / 36, (position.left - 50) / 40);
+          return (
+            <ConferenceChair
+              key={`chair-${person.id}`}
+              position={position}
+              width={chairWidth}
+              height={chairWidth * 1.2}
+              rotation={angle * (180 / Math.PI) + 90}
+            />
+          );
+        })}
+        {host && (
+          <ConferenceChair
+            position={headPosition(1.13)}
+            width={chairWidth}
+            height={chairWidth * 1.2}
+            rotation={0}
+          />
+        )}
+
+        {/* Tapered walnut legs are hidden by the top where they meet the apron. */}
         <div
-          className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[50%] blur-2xl transition-all duration-500"
+          aria-hidden
+          className="absolute left-[31%] top-[61%] z-[3] h-[38%] w-[6%] border-x border-[#4c3223] shadow-[inset_5px_0_6px_rgba(255,255,255,0.12),4px_8px_10px_rgba(36,24,16,0.22)]"
           style={{
-            width: "70%",
-            height: "68%",
-            background: aiSpeaking
-              ? "radial-gradient(circle, rgba(52,211,153,0.18) 0%, rgba(14,21,18,0) 70%)"
-              : "radial-gradient(circle, rgba(52,211,153,0.08) 0%, rgba(14,21,18,0) 72%)",
+            clipPath: "polygon(20% 0, 80% 0, 100% 100%, 0 100%)",
+            background: "linear-gradient(90deg, #5f3d29 0%, #9a6b45 48%, #68432d 100%)",
+          }}
+        />
+        <div
+          aria-hidden
+          className="absolute left-[63%] top-[61%] z-[3] h-[38%] w-[6%] border-x border-[#4c3223] shadow-[inset 5px 0_6px_rgba(255,255,255,0.12),-4px_8px_10px_rgba(36,24,16,0.22)]"
+          style={{
+            clipPath: "polygon(20% 0, 80% 0, 100% 100%, 0 100%)",
+            background: "linear-gradient(90deg, #68432d 0%, #9a6b45 52%, #5f3d29 100%)",
+          }}
+        />
+        <div
+          aria-hidden
+          className="absolute left-[21%] top-[49%] z-[2] h-[25%] w-[4.5%] border-x border-[#4c3223]"
+          style={{
+            clipPath: "polygon(25% 0, 75% 0, 100% 100%, 0 100%)",
+            background: "linear-gradient(90deg, #583925 0%, #8a5e3d 50%, #68432d 100%)",
+          }}
+        />
+        <div
+          aria-hidden
+          className="absolute left-[74.5%] top-[49%] z-[2] h-[25%] w-[4.5%] border-x border-[#4c3223]"
+          style={{
+            clipPath: "polygon(25% 0, 75% 0, 100% 100%, 0 100%)",
+            background: "linear-gradient(90deg, #68432d 0%, #8a5e3d 50%, #583925 100%)",
           }}
         />
 
-        {/* Sculpted oval conference table top with recessed inner acoustic surface */}
+        {/* Raised table edge gives the wood surface a restrained 3D profile. */}
         <div
-          className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[50%] border-2 shadow-[0_24px_60px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.08)] transition-all duration-500 ${
+          className="absolute left-1/2 top-[52%] z-[4] -translate-x-1/2 -translate-y-1/2 rounded-[50%] border border-[#62402d] shadow-[0_18px_22px_rgba(35,25,18,0.24)]"
+          style={{
+            width: "64%",
+            height: "62%",
+            background: "linear-gradient(180deg, #6f4933 0%, #593a2a 100%)",
+          }}
+        />
+        {/* Oval walnut tabletop */}
+        <div
+          className={`absolute left-1/2 top-1/2 z-[6] -translate-x-1/2 -translate-y-1/2 rounded-[50%] border-[5px] transition-colors duration-300 ${
             aiSpeaking
-              ? "border-accent/60 ring-4 ring-accent/15"
+              ? "border-[#9a6b48]"
               : paused
-                ? "border-warn/40"
-                : "border-[#2f493e]"
+                ? "border-[#a88455]"
+                : "border-[#855b3d]"
           }`}
           style={{
             width: "63%",
             height: "62%",
-            background:
-              "radial-gradient(ellipse at 50% 42%, #23382f 0%, #16241e 58%, #0f1915 100%)",
+            background: "linear-gradient(165deg, #b6855e 0%, #9a6c49 46%, #815638 100%)",
+            boxShadow: "inset 0 2px 3px rgba(255,255,255,0.16), inset 0 -7px 12px rgba(56,34,20,0.24)",
           }}
         >
-          {/* Decorative inner table inlay ring */}
+          {/* Subtle inset rim on the tabletop */}
           <div
-            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[50%] border border-white/5"
+            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[50%] border border-[#d1a37c]/35"
             style={{ width: "80%", height: "78%" }}
           />
 
@@ -167,24 +207,15 @@ export default function GdTable({
           {aiEnabled && (
             <div className="absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center">
               <div className="relative flex items-center justify-center">
-                {aiSpeaking && (
-                  <>
-                    <span className="absolute h-20 w-20 animate-ping rounded-full bg-accent/20" />
-                    <span className="absolute h-16 w-16 animate-pulse rounded-full border border-accent/60" />
-                  </>
-                )}
-                {aiThinking && !aiSpeaking && (
-                  <span className="absolute h-16 w-16 animate-spin rounded-full border-2 border-dashed border-accent/50" />
-                )}
                 <div
-                  className={`relative grid h-14 w-14 place-items-center rounded-full border-2 shadow-lg transition-all duration-300 ${
+                  className={`relative grid h-14 w-14 place-items-center rounded-full border-2 transition-colors duration-300 ${
                     paused
-                      ? "border-warn/50 bg-panel-2 text-warn"
+                      ? "border-warn/70 bg-panel text-warn"
                       : aiSpeaking
-                        ? "scale-110 border-accent bg-accent/25 text-accent shadow-[0_0_24px_rgba(52,211,153,0.45)]"
+                        ? "border-accent bg-panel text-accent"
                         : aiThinking
-                          ? "border-accent/60 bg-panel-2 text-accent"
-                          : "border-accent/35 bg-panel/95 text-accent/90"
+                          ? "border-accent/70 bg-panel text-accent"
+                          : "border-[#785238] bg-panel text-accent"
                   }`}
                 >
                   <Bot className="h-6 w-6" />
@@ -210,57 +241,53 @@ export default function GdTable({
           )}
         </div>
 
-        {/* Name plates placed cleanly on the inner perimeter of the table */}
-        {seats.map((seatNumber) => {
-          const position = seatPosition(seatNumber - 1, maxSeats, 0.62);
-          const occupant = seatHolders.get(seatNumber);
-          const isActiveSpeaker = occupant && activeSpeakerId === occupant.id;
-          const isInvited = occupant && invitedParticipantId === occupant.id;
+        {/* Name plates sit on the outward-facing chair backs, clear of the video tiles. */}
+        {seatedParticipants.map((occupant, index) => {
+          const position = seatPosition(index, seatCount, 1.27);
+          const name =
+            occupant.userId === selfUserId ? `${occupant.name} (you)` : occupant.name;
           return (
             <div
-              key={`plate-${seatNumber}`}
-              className="absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-all duration-300"
-              style={{ left: `${position.left}%`, top: `${position.top}%`, width: `${plateWidth}%` }}
+              key={`plate-${occupant.id}`}
+              className="absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-all duration-500"
+              style={{ left: `${position.left}%`, top: `${position.top}%`, width: `${chairWidth}%` }}
             >
               <div
-                className={`rounded-md border px-1 py-0.5 text-center leading-tight shadow-sm backdrop-blur-sm transition-colors ${
-                  isActiveSpeaker
-                    ? "border-accent bg-accent/20"
-                    : isInvited
-                      ? "border-warn/70 bg-warn/15"
-                      : occupant
-                        ? "border-accent/35 bg-bg/80"
-                        : "border-line/50 bg-panel/50 opacity-70"
+                title={name}
+                className={`truncate rounded-md border border-[#68472f] px-2 py-1 text-center text-[10px] font-semibold leading-tight text-[#34251c] shadow-md sm:text-[11px] ${
+                  activeSpeakerId === occupant.id
+                    ? "bg-[#f7dca8]"
+                    : invitedParticipantId === occupant.id
+                      ? "bg-[#f4e3bf]"
+                      : "bg-[#f4eee5]"
                 }`}
               >
-                <p className={`text-[9px] font-semibold ${occupant ? "text-ink" : "text-muted"}`}>
-                  Seat {seatNumber}
-                </p>
-                {showNames && (
-                  <p className="truncate text-[8px] text-muted">
-                    {occupant ? (occupant.userId === selfUserId ? "You" : occupant.name) : "open"}
-                  </p>
-                )}
+                {name}
               </div>
             </div>
           );
         })}
 
-        {/* Host nameplate at head of the table */}
+        {/* Host name plate on the back of the moderator's chair */}
         <div
-          className="absolute z-10 -translate-x-1/2 -translate-y-1/2"
-          style={{ left: `${headPlate.left}%`, top: `${headPlate.top}%`, width: `${plateWidth}%` }}
+          className="absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-all duration-500"
+          style={{
+            left: `${headPosition(1.27).left}%`,
+            top: `${headPosition(1.27).top}%`,
+            width: `${chairWidth}%`,
+          }}
         >
-          <div className="rounded-md border border-accent/45 bg-bg/85 px-1 py-0.5 text-center leading-tight shadow-sm">
-            <p className="text-[9px] font-semibold text-accent">Host Chair</p>
-            {showNames && <p className="truncate text-[8px] text-muted">{host ? host.name : "—"}</p>}
+          <div
+            title={host?.name ?? "Host"}
+            className="truncate rounded-md border border-[#68472f] bg-[#f4eee5] px-2 py-1 text-center text-[10px] font-semibold leading-tight text-[#34251c] shadow-md sm:text-[11px]"
+          >
+            {host?.userId === selfUserId ? `${host.name} (you)` : host?.name ?? "Host"}
           </div>
         </div>
 
         {/* Participant video seats around the table */}
-        {seats.map((seatNumber) => {
-          const occupant = seatHolders.get(seatNumber);
-          if (!occupant) return null;
+        {seatedParticipants.map((occupant, index) => {
+          const seatNumber = occupant.seatNumber ?? index + 1;
           const queueIdx = turnQueue.indexOf(occupant.id);
           return (
             <Seat
@@ -273,7 +300,7 @@ export default function GdTable({
               isActiveSpeaker={activeSpeakerId === occupant.id}
               isInvited={invitedParticipantId === occupant.id}
               queuePosition={queueIdx >= 0 ? queueIdx + 1 : null}
-              position={seatPosition(seatNumber - 1, maxSeats)}
+              position={seatPosition(index, seatCount, 0.84)}
               width={tileWidth}
               media={mediaByUser.get(occupant.userId) ?? null}
             />
@@ -292,7 +319,7 @@ export default function GdTable({
             isActiveSpeaker={activeSpeakerId === host.id}
             isInvited={false}
             queuePosition={turnQueue.indexOf(host.id) >= 0 ? turnQueue.indexOf(host.id) + 1 : null}
-            position={headPosition()}
+            position={headPosition(0.82)}
             width={tileWidth}
             media={mediaByUser.get(host.userId) ?? null}
           />
@@ -303,9 +330,9 @@ export default function GdTable({
       <div className="mt-4 space-y-3 sm:hidden">
         {aiEnabled && (
           <div
-            className={`flex items-center justify-between rounded-xl border p-3 ${
+            className={`flex items-center justify-between rounded-lg border p-3 ${
               aiSpeaking
-                ? "border-accent bg-accent/15 shadow-[0_0_20px_rgba(52,211,153,0.2)]"
+                ? "border-accent bg-accent/10"
                 : "border-line bg-panel-2"
             }`}
           >
@@ -331,7 +358,7 @@ export default function GdTable({
         )}
         <div className="grid grid-cols-2 gap-2.5">
           {participants
-            .filter((p) => !p.removed)
+            .filter((p) => !p.removed && !p.leftAt && p.joinedAt)
             .map((person) => {
               const media = mediaByUser.get(person.userId) ?? null;
               const speakingNow = Boolean(media?.speaking) || activeSpeakerId === person.id;
@@ -339,7 +366,7 @@ export default function GdTable({
               return (
                 <div
                   key={`mobile-seat-${person.id}`}
-                  className={`relative aspect-[4/3] overflow-hidden rounded-xl border bg-panel-2 ${
+                  className={`relative aspect-[4/3] overflow-hidden rounded-lg border bg-panel-2 ${
                     speakingNow ? "border-accent ring-2 ring-accent/25" : "border-line"
                   }`}
                 >
@@ -378,7 +405,7 @@ export default function GdTable({
       </div>
 
       <p className="mt-3 text-xs text-muted">
-        Seats stay assigned per participant throughout the meeting. The glowing ring marks whoever holds the speaking floor.
+        Seats are arranged for participants currently in the room. When someone leaves, the remaining seats close the gap.
       </p>
     </div>
   );
@@ -392,6 +419,61 @@ function WaveformBars({ active }: { active: boolean }) {
       <span className="h-3.5 w-0.5 animate-bounce rounded-full bg-accent" />
       <span className="h-2.5 w-0.5 animate-pulse rounded-full bg-accent" />
     </span>
+  );
+}
+
+function ConferenceChair({
+  position,
+  width,
+  height,
+  rotation,
+}: {
+  position: { left: number; top: number };
+  width: number;
+  height: number;
+  rotation: number;
+}) {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute z-[1] transition-all duration-500 ease-out"
+      style={{
+        left: `${position.left}%`,
+        top: `${position.top}%`,
+        width: `${width}%`,
+        height: `${height}%`,
+        transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
+      }}
+    >
+      <svg viewBox="0 0 100 100" className="h-full w-full" preserveAspectRatio="none">
+        <ellipse cx="50" cy="93" rx="33" ry="5" fill="#24180f" opacity=".22" />
+        <path
+          d="M25 14Q50 4 75 14L78 45Q50 53 22 45Z"
+          fill="#765239"
+          stroke="#493021"
+          strokeWidth="5"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M30 16Q50 9 70 16L72 40Q50 46 28 40Z"
+          fill="#987252"
+          stroke="#b18b67"
+          strokeWidth="1.5"
+        />
+        <path
+          d="M20 45Q50 37 80 45L88 58Q50 70 12 58Z"
+          fill="#60422f"
+          stroke="#493021"
+          strokeWidth="3"
+          strokeLinejoin="round"
+        />
+        <path d="M22 46Q50 40 78 46L82 54Q50 62 18 54Z" fill="#96704e" />
+        <path d="M20 38L11 46L14 60L23 61" fill="none" stroke="#4a3021" strokeWidth="7" strokeLinecap="round" />
+        <path d="M80 38L89 46L86 60L77 61" fill="none" stroke="#4a3021" strokeWidth="7" strokeLinecap="round" />
+        <path d="M20 58L17 78L12 94M80 58L83 78L88 94" fill="none" stroke="#4a3021" strokeWidth="6" strokeLinecap="round" />
+        <path d="M29 63L31 79L27 92M71 63L69 79L73 92" fill="none" stroke="#64452e" strokeWidth="4" strokeLinecap="round" />
+      </svg>
+    </div>
   );
 }
 
@@ -430,9 +512,9 @@ function Seat({
       style={{ left: `${position.left}%`, top: `${position.top}%`, width: `${width}%` }}
     >
       <div
-        className={`relative aspect-[4/3] overflow-hidden rounded-2xl border-2 bg-panel-2 shadow-[0_12px_28px_rgba(0,0,0,0.55)] transition-all duration-300 ${
+        className={`relative aspect-[4/3] overflow-hidden rounded-lg border-2 bg-panel-2 shadow-md transition-all duration-300 ${
           speakingNow
-            ? "scale-105 border-accent ring-4 ring-accent/25 shadow-[0_0_24px_rgba(52,211,153,0.35)]"
+            ? "scale-[1.02] border-accent ring-2 ring-accent/20"
             : isInvited
               ? "border-warn ring-2 ring-warn/25"
               : isSelf
@@ -448,7 +530,7 @@ function Seat({
             className={`h-full w-full object-cover ${isSelf ? "-scale-x-100" : ""}`}
           />
         ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-b from-panel-2 to-bg">
+          <div className="flex h-full w-full flex-col items-center justify-center bg-panel-2">
             <span
               className={`grid h-10 w-10 place-items-center rounded-full border text-xs font-semibold uppercase sm:h-12 sm:w-12 sm:text-sm ${
                 speakingNow
