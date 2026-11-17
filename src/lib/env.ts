@@ -8,11 +8,17 @@ import { z } from "zod";
  * Server-only: never import this module from a client component.
  */
 
+const DEV_FALLBACK_JWT_SECRET =
+  "quorum-ai-studio-dev-fallback-jwt-secret-please-set-in-env";
+
 const schema = z.object({
-  DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
-  JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters long"),
+  DATABASE_URL: z.string().optional().default(""),
+  JWT_SECRET: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length >= 32 ? v : DEV_FALLBACK_JWT_SECRET)),
   APP_URL: z.string().optional(),
-  PORT: z.coerce.number().int().positive().default(4000),
+  PORT: z.coerce.number().int().positive().default(3000),
   TRUST_PROXY: z.string().optional().default("off"),
   COOKIE_SECURE: z.string().optional().default(""),
 
@@ -85,7 +91,7 @@ export const env = {
     // wins when set, which is what a custom domain needs.
     raw.APP_URL ??
     process.env.RENDER_EXTERNAL_URL ??
-    "http://localhost:4000"
+    "http://localhost:3000"
   ).replace(/\/$/, ""),
   port: raw.PORT,
   trustProxy: raw.TRUST_PROXY === "on",

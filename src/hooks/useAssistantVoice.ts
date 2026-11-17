@@ -86,6 +86,7 @@ export function useAssistantVoice({
   lang = "en-US",
   hold = false,
   maxDeferMs = 25_000,
+  onSpeakingChange,
 }: {
   /** BCP-47 language tag for the spoken sentence. */
   lang?: string;
@@ -93,6 +94,8 @@ export function useAssistantVoice({
   hold?: boolean;
   /** A sentence that has waited longer than this is dropped rather than spoken late. */
   maxDeferMs?: number;
+  /** Notifies the room when browser TTS actually begins or ends speaking. */
+  onSpeakingChange?: (speaking: boolean, estimatedDurationMs?: number) => void;
 } = {}): AssistantVoice {
   // Detected in an effect so the first client render matches the server HTML.
   const [supported, setSupported] = useState(false);
@@ -107,6 +110,8 @@ export function useAssistantVoice({
   const holdRef = useRef(hold);
   const speakingRef = useRef(false);
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const onSpeakingChangeRef = useRef(onSpeakingChange);
+  onSpeakingChangeRef.current = onSpeakingChange;
   /** Sentences waiting for the room to fall quiet again. */
   const queueRef = useRef<{ text: string; queuedAt: number }[]>([]);
   /** The last sentence actually spoken, so nothing is ever said twice. */
@@ -125,18 +130,28 @@ export function useAssistantVoice({
     const synth = window.speechSynthesis;
 
     const step = () => {
+      const wasSpeaking = speakingRef.current;
       speakingRef.current = false;
       setSpeaking(false);
       setSpokenText(null);
+      if (wasSpeaking && queueRef.current.length === 0) {
+        onSpeakingChangeRef.current?.(false);
+      }
 
       // Wait for a gap: never talk over a participant, and stay muted on request.
-      if (!enabledRef.current || !unlockedRef.current || holdRef.current) return;
+      if (!enabledRef.current || !unlockedRef.current || holdRef.current) {
+        if (wasSpeaking) onSpeakingChangeRef.current?.(false);
+        return;
+      }
 
       let item = queueRef.current.shift();
       while (item && Date.now() - item.queuedAt > maxDeferMs) {
         item = queueRef.current.shift();
       }
-      if (!item) return;
+      if (!item) {
+        if (wasSpeaking) onSpeakingChangeRef.current?.(false);
+        return;
+      }
       const pending = item;
 
       const utterance = new SpeechSynthesisUtterance(pending.text);
@@ -146,6 +161,9 @@ export function useAssistantVoice({
       utterance.pitch = 1;
       utterance.volume = 1;
 
+      const words = pending.text.trim().split(/\s+/).filter(Boolean).length;
+      const estimatedMs = Math.max(3000, Math.min(25_000, words * 400 + 1800));
+
       const release = () => {
         queueRef.current.unshift(pending);
         unlockedRef.current = false;
@@ -153,11 +171,9 @@ export function useAssistantVoice({
         speakingRef.current = false;
         setSpeaking(false);
         setSpokenText(null);
+        onSpeakingChangeRef.current?.(false);
       };
 
-      // Safari and some Chromium builds drop a sentence without firing an error
-      // when the page has not been interacted with yet. Without this watchdog the
-      // queue would stay wedged behind an utterance that never plays.
       let started = false;
       const watchdog = setTimeout(() => {
         if (started || synth.speaking || synth.pending) return;
@@ -175,7 +191,6 @@ export function useAssistantVoice({
       utterance.onerror = (event) => {
         clearTimeout(watchdog);
         if (event.error === "not-allowed") {
-          // The browser wants a user gesture first; hold the sentence back.
           release();
           return;
         }
@@ -186,10 +201,10 @@ export function useAssistantVoice({
       setSpeaking(true);
       setSpokenText(pending.text);
       lastSpokenRef.current = pending.text;
+      onSpeakingChangeRef.current?.(true, estimatedMs);
       synth.speak(utterance);
     };
 
-    // Once a sentence is playing, `step` owns the rest of the queue.
     if (speakingRef.current) return;
     step();
   }, [supported, lang, maxDeferMs]);
@@ -200,7 +215,6 @@ export function useAssistantVoice({
     (text: string) => {
       const message = text.trim();
       if (!supported || !message) return;
-      // The assistant must never repeat itself.
       if (message === lastSpokenRef.current) return;
       if (queueRef.current.some((item) => item.text === message)) return;
       queueRef.current.push({ text: message, queuedAt: Date.now() });
@@ -210,6 +224,7 @@ export function useAssistantVoice({
   );
 
   const stop = useCallback(() => {
+    const wasSpeaking = speakingRef.current;
     queueRef.current = [];
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
@@ -217,6 +232,7 @@ export function useAssistantVoice({
     speakingRef.current = false;
     setSpeaking(false);
     setSpokenText(null);
+    if (wasSpeaking) onSpeakingChangeRef.current?.(false);
   }, []);
 
   const setEnabled = useCallback(

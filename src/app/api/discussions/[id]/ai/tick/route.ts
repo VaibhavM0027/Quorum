@@ -1,7 +1,6 @@
 import { requireSession } from "@/lib/auth";
 import { loadDiscussionForUser } from "@/lib/discussions";
-import { runAssistantTick } from "@/lib/ai-assistant";
-import { geminiAvailable } from "@/lib/gemini";
+import { ensureRoomOrchestrator, runAssistantTick } from "@/lib/ai-assistant";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { fail, handleRouteError, ok } from "@/lib/http";
 
@@ -25,8 +24,8 @@ export async function POST(_request: Request, { params }: Params) {
     const access = await loadDiscussionForUser(id, user.id);
     if (!access) return fail("Discussion not found, or you do not have access to it.", 404);
 
-    if (!geminiAvailable()) {
-      return ok({ skipped: "ai-disabled", classified: 0, eventsCreated: [] });
+    if (access.discussion.status === "LIVE" && access.discussion.aiEnabled) {
+      ensureRoomOrchestrator(id);
     }
 
     // Shared ceiling across every client watching this room.

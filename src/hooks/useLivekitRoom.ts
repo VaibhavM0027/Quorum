@@ -13,17 +13,9 @@ import {
   TRANSCRIPT_PARTIAL_TOPIC,
   TRANSCRIPT_UPDATE_TOPIC,
 } from "@/lib/transcript";
+import type { RoomStateBroadcast } from "@/lib/livekit";
 
-/**
- * LiveKit connection for a single discussion room.
- *
- * `breakoutRoom` names the group this browser belongs in: null is the main
- * room, a number is that breakout group's own room. Changing it reconnects the
- * client, which is how a student follows the host's allocation.
- *
- * `livekit-client` is imported dynamically because it touches browser globals
- * and must never run during server rendering.
- */
+const ROOM_STATE_TOPIC = "quorum.room.state";
 
 export type LivekitStatus = "idle" | "connecting" | "connected" | "reconnecting" | "error";
 
@@ -56,6 +48,14 @@ export type TranscriptDraftMessage =
       participantIdentity: string;
     };
 
+export type LivekitConnectOptions = {
+  initialMicEnabled?: boolean;
+  initialCamEnabled?: boolean;
+  audioDeviceId?: string;
+  videoDeviceId?: string;
+  onRoomState?: (state: RoomStateBroadcast) => void;
+};
+
 function parseHost(metadata: string | undefined): boolean {
   if (!metadata) return false;
   try {
@@ -65,7 +65,6 @@ function parseHost(metadata: string | undefined): boolean {
   }
 }
 
-/** Turns a getUserMedia failure into something a participant can act on. */
 function micErrorMessage(error: unknown): string {
   const name = error instanceof Error ? error.name : "";
   const message = error instanceof Error ? error.message : "";
@@ -82,7 +81,6 @@ function micErrorMessage(error: unknown): string {
   return message || "Could not access the microphone";
 }
 
-/** Reads the first published video/audio track for a participant. */
 function describeParticipant(participant: Participant, isLocal: boolean): TileInfo {
   let videoTrack: MediaStreamTrack | null = null;
   let audioTrack: MediaStreamTrack | null = null;
@@ -123,29 +121,41 @@ export function useLivekitRoom(
   shouldConnect: boolean,
   onTranscriptUpdate?: () => void,
   onTranscriptDraft?: (message: TranscriptDraftMessage) => void,
+  options: LivekitConnectOptions = {},
 ) {
   const roomRef = useRef<LKRoom | null>(null);
   const onTranscriptUpdateRef = useRef(onTranscriptUpdate);
   onTranscriptUpdateRef.current = onTranscriptUpdate;
   const onTranscriptDraftRef = useRef(onTranscriptDraft);
   onTranscriptDraftRef.current = onTranscriptDraft;
+  const onRoomStateRef = useRef(options.onRoomState);
+  onRoomStateRef.current = options.onRoomState;
+
+  const audioDeviceIdRef = useRef(options.audioDeviceId);
+  audioDeviceIdRef.current = options.audioDeviceId;
+  const videoDeviceIdRef = useRef(options.videoDeviceId);
+  videoDeviceIdRef.current = options.videoDeviceId;
+
   const [status, setStatus] = useState<LivekitStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [tiles, setTiles] = useState<TileInfo[]>([]);
   const [micEnabled, setMicEnabled] = useState(false);
   const [camEnabled, setCamEnabled] = useState(false);
+  const [sfuCanPublish, setSfuCanPublish] = useState(true);
+  const [serverSttActive, setServerSttActive] = useState(false);
   const [needsAudioUnblock, setNeedsAudioUnblock] = useState(false);
-  /**
-   * The microphone state the participant last chose.
-   *
-   * Moving to a breakout room tears the connection down and builds a new one,
-   * and a fresh connection starts with the microphone off. Remembering the
-   * choice lets it be restored, so being moved to a group does not silently
-   * mute someone who was taking part.
-   */
-  const micWantedRef = useRef(false);
 
-  /** Rebuilds the tile list from the current room state. */
+  const micWantedRef = useRef(Boolean(options.initialMicEnabled));
+  const camWantedRef = useRef(Boolean(options.initialCamEnabled));
+
+  // Keep pre-join preferences synced before the initial connect fires.
+  useEffect(() => {
+    if (status === "idle") {
+      micWantedRef.current = Boolean(options.initialMicEnabled);
+      camWantedRef.current = Boolean(options.initialCamEnabled);
+    }
+  }, [options.initialMicEnabled, options.initialCamEnabled, status]);
+
   const sync = useCallback(() => {
     const room = roomRef.current;
     if (!room) {
@@ -159,7 +169,28 @@ export function useLivekitRoom(
     setTiles(list);
     setMicEnabled(room.localParticipant.isMicrophoneEnabled);
     setCamEnabled(room.localParticipant.isCameraEnabled);
+    if (room.localParticipant.permissions) {
+      setSfuCanPublish(Boolean(room.localParticipant.permissions.canPublish));
+    }
   }, []);
+
+  const releaseLocalMic = useCallback(async (room: LKRoom) => {
+    try {
+      const publication = await room.localParticipant.setMicrophoneEnabled(false);
+      const [anyAudio] = room.localParticipant.audioTrackPublications.values();
+      const track = publication?.track ?? anyAudio?.track;
+      if (track) {
+        try {
+          await room.localParticipant.unpublishTrack(track, true);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    sync();
+  }, [sync]);
 
   useEffect(() => {
     if (!shouldConnect) return;
@@ -178,11 +209,16 @@ export function useLivekitRoom(
           error?: string;
           token?: string;
           url?: string;
+          canPublish?: boolean;
+          serverSttActive?: boolean;
         };
         if (!tokenRes.ok || !data.token || !data.url) {
           throw new Error(data.error ?? "Could not obtain a room token");
         }
         if (disposed) return;
+
+        setSfuCanPublish(data.canPublish !== false);
+        setServerSttActive(Boolean(data.serverSttActive));
 
         const lk = await import("livekit-client");
         if (disposed) return;
@@ -190,16 +226,19 @@ export function useLivekitRoom(
         const room = new lk.Room({
           adaptiveStream: true,
           dynacast: true,
-          audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true },
+          audioCaptureDefaults: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            ...(audioDeviceIdRef.current ? { deviceId: audioDeviceIdRef.current } : {}),
+          },
+          videoCaptureDefaults: videoDeviceIdRef.current
+            ? { deviceId: videoDeviceIdRef.current }
+            : undefined,
         });
         roomRef.current = room;
 
         const onChange = () => sync();
 
-        // The media path is logged at every step, because "this participant is
-        // audible" and "this participant is being transcribed" are different
-        // facts: audio arriving over LiveKit never becomes a transcript by
-        // itself, and only the microphone owner's own browser can transcribe it.
         const onParticipantConnected = (participant: Participant) => {
           transcriptLog("participant connected", {
             identity: participant.identity,
@@ -267,7 +306,39 @@ export function useLivekitRoom(
           .on(lk.RoomEvent.LocalTrackPublished, onLocalTrackPublished)
           .on(lk.RoomEvent.LocalTrackUnpublished, onChange)
           .on(lk.RoomEvent.ActiveSpeakersChanged, onChange)
+          .on(lk.RoomEvent.ParticipantPermissionsChanged, (_prev, participant) => {
+            if (participant === room.localParticipant) {
+              const allowed = participant.permissions?.canPublish ?? true;
+              setSfuCanPublish(allowed);
+              if (!allowed && room.localParticipant.isMicrophoneEnabled) {
+                void releaseLocalMic(room);
+              } else {
+                sync();
+              }
+            }
+          })
           .on(lk.RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+            if (topic === ROOM_STATE_TOPIC) {
+              try {
+                const state = JSON.parse(new TextDecoder().decode(payload)) as RoomStateBroadcast;
+                if (state?.type === "room-state") {
+                  setServerSttActive(Boolean(state.serverSttActive));
+                  const myIdentity = room.localParticipant.identity;
+                  const mustMute =
+                    state.aiSpeaking ||
+                    state.paused ||
+                    state.lockedIdentities.includes(myIdentity);
+                  setSfuCanPublish(!mustMute);
+                  if (mustMute && room.localParticipant.isMicrophoneEnabled) {
+                    void releaseLocalMic(room);
+                  }
+                  onRoomStateRef.current?.(state);
+                }
+              } catch {
+                /* ignore malformed room-state payload */
+              }
+              return;
+            }
             if (topic === TRANSCRIPT_PARTIAL_TOPIC) {
               try {
                 const message = JSON.parse(new TextDecoder().decode(payload)) as {
@@ -330,9 +401,6 @@ export function useLivekitRoom(
             sync();
           })
           .on(lk.RoomEvent.Disconnected, () => {
-            // A room we have already moved on from can report its disconnect
-            // after the new one is up; ignoring it stops that late event from
-            // clearing the room we are actually in.
             if (roomRef.current !== room) return;
             setStatus("idle");
             roomRef.current = null;
@@ -350,17 +418,30 @@ export function useLivekitRoom(
         });
 
         setStatus("connected");
-        // Browsers block remote audio until the user interacts with the page.
         setNeedsAudioUnblock(!room.canPlaybackAudio);
 
-        // A new connection starts muted; put back the microphone state the
-        // participant had chosen before they were moved.
-        if (micWantedRef.current) {
+        const canPublishNow =
+          data.canPublish !== false && (room.localParticipant.permissions?.canPublish ?? true);
+        setSfuCanPublish(canPublishNow);
+
+        if (micWantedRef.current && canPublishNow) {
           try {
-            await room.localParticipant.setMicrophoneEnabled(true);
+            await room.localParticipant.setMicrophoneEnabled(
+              true,
+              audioDeviceIdRef.current ? { deviceId: audioDeviceIdRef.current } : undefined,
+            );
           } catch {
-            // The device may have gone; never claim a microphone that is not there.
             micWantedRef.current = false;
+          }
+        }
+        if (camWantedRef.current) {
+          try {
+            await room.localParticipant.setCameraEnabled(
+              true,
+              videoDeviceIdRef.current ? { deviceId: videoDeviceIdRef.current } : undefined,
+            );
+          } catch {
+            camWantedRef.current = false;
           }
         }
 
@@ -380,9 +461,8 @@ export function useLivekitRoom(
       roomRef.current = null;
       if (room) void room.disconnect();
     };
-  }, [discussionId, breakoutRoom, shouldConnect, sync]);
+  }, [discussionId, breakoutRoom, shouldConnect, sync, releaseLocalMic]);
 
-  /** Some browsers need a user gesture before remote audio is audible. */
   const startAudio = useCallback(async () => {
     const room = roomRef.current;
     if (!room) return;
@@ -395,42 +475,64 @@ export function useLivekitRoom(
   }, []);
 
   /**
-   * Turns the microphone on or off. Returns an error message, or null on success.
-   *
-   * Switching it off does two things: the published track is muted (so not a
-   * single audio packet leaves the browser) *and* the capture device is released.
-   * Muting alone would leave `MediaStreamTrack.enabled = false` capturing, which
-   * is why the browser keeps showing its recording indicator and why anything
-   * reading the microphone — such as the audio chunk recorder — keeps hearing the
-   * room. Releasing the device is what makes "microphone off" true rather than a
-   * label. Switching it back on republishes through LiveKit's normal path.
-   *
-   * Because nothing stays published while the microphone is off, a reconnection
-   * has nothing to bring back: the microphone cannot come on by itself.
+   * Authoritatively verifies microphone permission with the server before
+   * publishing audio. Server rejects unmute requests whenever AI is speaking,
+   * the host locked the mic, or the meeting is paused.
    */
   const applyMic = useCallback(
-    async (enabled: boolean): Promise<string | null> => {
+    async (enabled: boolean, notifyServer = true): Promise<string | null> => {
       const room = roomRef.current;
       if (!room) return null;
+
+      if (enabled && notifyServer) {
+        try {
+          const gateRes = await fetch(`/api/discussions/${discussionId}/mic`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ enabled: true }),
+          });
+          if (!gateRes.ok) {
+            const gateData = (await gateRes.json().catch(() => ({}))) as { error?: string };
+            setSfuCanPublish(false);
+            if (room.localParticipant.isMicrophoneEnabled) {
+              await releaseLocalMic(room);
+            }
+            return gateData.error ?? "Your microphone is currently locked.";
+          }
+          setSfuCanPublish(true);
+        } catch {
+          return "Could not verify microphone permission with the server.";
+        }
+      }
+
       if (room.localParticipant.isMicrophoneEnabled === enabled) {
-        micWantedRef.current = enabled;
+        if (!enabled) micWantedRef.current = false;
         return null;
       }
 
       setError(null);
       try {
-        const publication = await room.localParticipant.setMicrophoneEnabled(enabled);
+        const publication = await room.localParticipant.setMicrophoneEnabled(
+          enabled,
+          enabled && audioDeviceIdRef.current ? { deviceId: audioDeviceIdRef.current } : undefined,
+        );
         if (!enabled) {
           const [anyAudio] = room.localParticipant.audioTrackPublications.values();
           const track = publication?.track ?? anyAudio?.track;
-          // `stopOnUnpublish` stops the underlying MediaStreamTrack, releasing
-          // the device. Failing here is not fatal: the track is already muted.
           if (track) {
             try {
               await room.localParticipant.unpublishTrack(track, true);
             } catch {
-              /* the mute above already stops any transmission */
+              /* ignore */
             }
+          }
+          if (notifyServer) {
+            void fetch(`/api/discussions/${discussionId}/mic`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ enabled: false }),
+              keepalive: true,
+            }).catch(() => {});
           }
         }
         micWantedRef.current = enabled;
@@ -440,7 +542,6 @@ export function useLivekitRoom(
         sync();
         return null;
       } catch (err) {
-        // Never leave the UI claiming a microphone that is not there.
         micWantedRef.current = false;
         setMicEnabled(false);
         transcriptWarn("could not change the microphone", {
@@ -449,21 +550,20 @@ export function useLivekitRoom(
         return micErrorMessage(err);
       }
     },
-    [sync],
+    [discussionId, releaseLocalMic, sync],
   );
 
   const toggleMic = useCallback(async () => {
     const room = roomRef.current;
     if (!room) return;
-    const failure = await applyMic(!room.localParticipant.isMicrophoneEnabled);
+    const failure = await applyMic(!room.localParticipant.isMicrophoneEnabled, true);
     if (failure) setError(failure);
   }, [applyMic]);
 
-  /** Explicitly enables or disables the microphone (used when the host locks it). */
   const setMic = useCallback(
     async (enabled: boolean) => {
-      const failure = await applyMic(enabled);
-      if (failure) setError(failure);
+      const failure = await applyMic(enabled, enabled);
+      if (failure && enabled) setError(failure);
     },
     [applyMic],
   );
@@ -472,7 +572,12 @@ export function useLivekitRoom(
     const room = roomRef.current;
     if (!room) return;
     try {
-      await room.localParticipant.setCameraEnabled(!room.localParticipant.isCameraEnabled);
+      const next = !room.localParticipant.isCameraEnabled;
+      await room.localParticipant.setCameraEnabled(
+        next,
+        next && videoDeviceIdRef.current ? { deviceId: videoDeviceIdRef.current } : undefined,
+      );
+      camWantedRef.current = next;
       sync();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not access the camera");
@@ -487,24 +592,27 @@ export function useLivekitRoom(
     setStatus("idle");
   }, []);
 
-  const publishTranscriptDraft = useCallback((message: {
-    type: "partial" | "partial-cleared";
-    streamId: string;
-    revision: number;
-    text?: string;
-    startedAt?: string;
-  }) => {
-    const room = roomRef.current;
-    if (!room) return;
-    const topic = TRANSCRIPT_PARTIAL_TOPIC;
-    void room.localParticipant
-      .publishData(new TextEncoder().encode(JSON.stringify(message)), { reliable: true, topic })
-      .catch((cause: unknown) => {
-        transcriptWarn("could not publish live transcript draft", {
-          error: cause instanceof Error ? cause.message : String(cause),
+  const publishTranscriptDraft = useCallback(
+    (message: {
+      type: "partial" | "partial-cleared";
+      streamId: string;
+      revision: number;
+      text?: string;
+      startedAt?: string;
+    }) => {
+      const room = roomRef.current;
+      if (!room) return;
+      const topic = TRANSCRIPT_PARTIAL_TOPIC;
+      void room.localParticipant
+        .publishData(new TextEncoder().encode(JSON.stringify(message)), { reliable: true, topic })
+        .catch((cause: unknown) => {
+          transcriptWarn("could not publish live transcript draft", {
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
         });
-      });
-  }, []);
+    },
+    [],
+  );
 
   return {
     status,
@@ -512,6 +620,8 @@ export function useLivekitRoom(
     tiles,
     micEnabled,
     camEnabled,
+    sfuCanPublish,
+    serverSttActive,
     needsAudioUnblock,
     startAudio,
     toggleMic,

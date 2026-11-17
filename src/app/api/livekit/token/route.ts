@@ -1,6 +1,13 @@
 import { requireSession } from "@/lib/auth";
 import { loadDiscussionForUser } from "@/lib/discussions";
 import { browserLivekitUrl, createRoomToken, livekitReady, roomNameFor } from "@/lib/livekit";
+import { ensureRoomSttWorker } from "@/lib/livekit-stt-worker";
+import {
+  expireStaleAiSpeakingLock,
+  isAiSpeakingLocked,
+  isMeetingPaused,
+  isRoomSttActive,
+} from "@/lib/room-sync";
 import { fail, handleRouteError, ok } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -9,10 +16,6 @@ export const dynamic = "force-dynamic";
 /**
  * Issues a LiveKit join token for the signed-in participant of a discussion.
  * The token is scoped to that single room and expires after 4 hours.
- *
- * Which room that is comes from the participant's own allocation, never from
- * the request: a client may ask for a breakout room, but only the one it was
- * actually placed in. Otherwise any student could walk into another group.
  */
 export async function GET(request: Request) {
   try {
@@ -28,6 +31,8 @@ export async function GET(request: Request) {
     const discussionId = new URL(request.url).searchParams.get("discussionId");
     if (!discussionId) return fail("discussionId is required.", 400);
 
+    await expireStaleAiSpeakingLock(discussionId);
+
     const access = await loadDiscussionForUser(discussionId, user.id);
     if (!access) return fail("You do not have access to this discussion.", 403);
 
@@ -40,8 +45,6 @@ export async function GET(request: Request) {
     if (!me) return fail("Join the discussion before connecting to the room.", 403);
     if (me.removed) return fail("You were removed from this discussion.", 403);
 
-    // The moderator stays in the main room, so the session recording keeps
-    // capturing the room rather than following them into a group.
     const breakoutRoom = isHost || !discussion.breakoutEnabled ? null : (me.breakoutRoom ?? null);
 
     const requested = new URL(request.url).searchParams.get("room");
@@ -52,12 +55,21 @@ export async function GET(request: Request) {
       }
     }
 
+    const paused = isMeetingPaused(discussion);
+    const aiLocked = isAiSpeakingLocked(discussion);
+    const canPublish =
+      discussion.status === "LIVE" && !paused && !aiLocked && !me.micLocked;
+
+    if (discussion.status === "LIVE" && discussion.transcriptionEnabled) {
+      void ensureRoomSttWorker(discussion.id, breakoutRoom);
+    }
+
     const token = await createRoomToken({
       discussionId: discussion.id,
       identity: user.id,
       name: me.displayName,
       isHost,
-      canPublish: !me.micLocked,
+      canPublish,
       breakoutRoom,
     });
 
@@ -66,8 +78,11 @@ export async function GET(request: Request) {
       url: browserLivekitUrl(),
       roomName: roomNameFor(discussion.id, breakoutRoom),
       identity: user.id,
-      canPublish: !me.micLocked,
+      canPublish,
+      aiSpeaking: aiLocked,
+      paused,
       breakoutRoom,
+      serverSttActive: isRoomSttActive(discussion.id),
     });
   } catch (error) {
     return handleRouteError(error);

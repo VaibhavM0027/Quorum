@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { loadDiscussionForUser } from "@/lib/discussions";
 import { env } from "@/lib/env";
+import { isAiSpeakingLocked, isMeetingPaused, isRoomSttActive } from "@/lib/room-sync";
 import RoomClient, { type RoomDiscussion } from "@/components/RoomClient";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +34,10 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
     silencePromptSec: discussion.silencePromptSec,
     inviteResponseSec: discussion.inviteResponseSec,
     conversationState: discussion.conversationState,
+    aiSpeaking: isAiSpeakingLocked(discussion),
+    paused: isMeetingPaused(discussion),
+    activeSpeakerId: discussion.activeSpeakerId,
+    serverSttActive: isRoomSttActive(discussion.id),
     breakoutEnabled: discussion.breakoutEnabled,
     breakoutGroupSize: discussion.breakoutGroupSize,
     scheduledAt: discussion.scheduledAt.toISOString(),

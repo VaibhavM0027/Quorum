@@ -58,7 +58,7 @@ export const createDiscussionSchema = z.object({
 });
 
 export const updateDiscussionSchema = z.object({
-  action: z.enum(["start", "end", "cancel", "reopen"]),
+  action: z.enum(["start", "end", "cancel", "reopen", "pause", "resume"]),
 });
 
 export const joinDiscussionSchema = z.object({
@@ -95,6 +95,7 @@ export const transcriptSegmentSchema = z.object({
   endedAt: z.coerce.date(),
   durationMs: z.coerce.number().int().min(0).max(600_000).default(0),
   streamId: z.string().uuid().optional(),
+  confidence: z.coerce.number().min(0).max(1).optional(),
 });
 
 export const transcriptPartialSchema = z.object({
@@ -109,6 +110,9 @@ export const transcriptAudioMetadataSchema = z.object({
   endedAt: z.coerce.date(),
   durationMs: z.coerce.number().int().min(0).max(45_000),
   language: z.string().trim().min(2).max(35).optional(),
+  streamId: z.string().uuid().optional(),
+  revision: z.coerce.number().int().min(0).max(1_000_000).optional(),
+  mode: z.enum(["partial", "final"]).optional().default("final"),
 });
 
 // ---------------------------------------------------------------------------

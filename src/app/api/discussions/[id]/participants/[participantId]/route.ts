@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
 import { assignBreakoutRooms, assignSeat, releaseSeat } from "@/lib/discussions";
 import { fail, handleRouteError, ok, readJson } from "@/lib/http";
+import { enforceParticipantMicPermission } from "@/lib/livekit";
+import { isAiSpeakingLocked, isMeetingPaused, syncRoomStateSnapshot } from "@/lib/room-sync";
 import { participantControlSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -11,12 +13,7 @@ type Params = { params: Promise<{ id: string; participantId: string }> };
 
 /**
  * Host controls over a single participant in a room.
- *
- * Mic locking is enforced cooperatively: the flag is stored here and the
- * participant's own client mutes and disables its microphone when it sees it.
- * Removing a participant revokes their room access — every authenticated
- * endpoint checks the `removed` flag — but does not delete their transcript,
- * because that would rewrite the record of the discussion.
+ * Enforces `canPublish` and mutes active tracks authoritatively on LiveKit SFU.
  */
 export async function PATCH(request: Request, { params }: Params) {
   try {
@@ -26,7 +23,17 @@ export async function PATCH(request: Request, { params }: Params) {
 
     const discussion = await prisma.discussion.findUnique({
       where: { id },
-      select: { id: true, hostId: true, maxParticipants: true },
+      select: {
+        id: true,
+        hostId: true,
+        maxParticipants: true,
+        status: true,
+        pausedAt: true,
+        conversationState: true,
+        aiSpeakingUntil: true,
+        lastAiSpokeAt: true,
+        breakoutEnabled: true,
+      },
     });
     if (!discussion) return fail("Discussion not found.", 404);
     if (discussion.hostId !== user.id) {
@@ -35,7 +42,7 @@ export async function PATCH(request: Request, { params }: Params) {
 
     const member = await prisma.discussionParticipant.findUnique({
       where: { id: participantId },
-      select: { id: true, discussionId: true, isHost: true },
+      select: { id: true, discussionId: true, userId: true, isHost: true, breakoutRoom: true },
     });
     if (!member || member.discussionId !== id) {
       return fail("That participant is not in this discussion.", 404);
@@ -46,11 +53,11 @@ export async function PATCH(request: Request, { params }: Params) {
 
     const data =
       action === "lock-mic"
-        ? { micLocked: true }
+        ? { micLocked: true, speakingSince: null }
         : action === "unlock-mic"
           ? { micLocked: false }
           : action === "remove"
-            ? { removed: true, micLocked: true, leftAt: new Date() }
+            ? { removed: true, micLocked: true, speakingSince: null, leftAt: new Date() }
             : { removed: false, micLocked: false, leftAt: null };
 
     const updated = await prisma.discussionParticipant.update({
@@ -59,18 +66,26 @@ export async function PATCH(request: Request, { params }: Params) {
       select: { id: true, removed: true, micLocked: true },
     });
 
-    // Someone who was removed gives their seat up for the next student; someone
-    // who is restored is seated again, in the lowest free chair.
     if (action === "remove") {
       await releaseSeat(id, participantId);
     } else if (action === "restore") {
       await assignSeat(id, participantId, discussion.maxParticipants);
     }
-    // A removal takes a student out of their group, and a restore puts them
-    // back; either way the groups are rebalanced from the same allocator.
     if (action === "remove" || action === "restore") {
       await assignBreakoutRooms(id);
     }
+
+    const roomBlocked =
+      discussion.status !== "LIVE" || isAiSpeakingLocked(discussion) || isMeetingPaused(discussion);
+    await enforceParticipantMicPermission({
+      discussionId: id,
+      breakoutRoom: discussion.breakoutEnabled ? member.breakoutRoom : null,
+      identity: member.userId,
+      canPublish: !updated.removed && !updated.micLocked && !roomBlocked,
+      remove: action === "remove",
+    });
+
+    await syncRoomStateSnapshot(id, { broadcast: true, syncMics: false });
 
     return ok({ participant: updated });
   } catch (error) {

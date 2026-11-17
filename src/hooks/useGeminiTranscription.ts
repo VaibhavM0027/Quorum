@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const MAX_SEGMENT_DURATION_MS = 45_000;
 const SILENCE_FINALIZE_MS = 1_200;
+const PARTIAL_INTERVAL_MS = 3_000;
 const PRE_ROLL_MS = 250;
 const TARGET_SAMPLE_RATE = 16_000;
 const MAX_PENDING_CHUNKS = 20;
@@ -14,6 +15,9 @@ type AudioChunk = {
   startedAt: Date;
   endedAt: Date;
   durationMs: number;
+  streamId: string;
+  revision: number;
+  mode: "partial" | "final";
 };
 
 type TranscriptionResponse = {
@@ -21,6 +25,9 @@ type TranscriptionResponse = {
   issues?: Array<{ path?: string; message?: string }>;
   retryAfterMs?: number;
   skipped?: string;
+  text?: string;
+  streamId?: string;
+  revision?: number;
 };
 
 function getAudioContextConstructor(): typeof AudioContext | null {
@@ -30,6 +37,17 @@ function getAudioContextConstructor(): typeof AudioContext | null {
     (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext ??
     null
   );
+}
+
+function createUuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export function encodePcmWav(sourceSamples: Float32Array, sourceSampleRate: number): Blob {
@@ -103,6 +121,21 @@ export function shouldFinalizeAudioBuffer(durationMs: number, silenceMs: number)
   return durationMs >= MAX_SEGMENT_DURATION_MS || silenceMs >= SILENCE_FINALIZE_MS;
 }
 
+export type AudioPartialEvent = {
+  streamId: string;
+  revision: number;
+  text: string;
+  startedAt: Date;
+};
+
+/**
+ * Browser-independent continuous audio transcription hook.
+ *
+ * Uses standard Web Audio (`AudioContext` + WAV) instead of Chrome-only Web
+ * Speech API so Chrome, Edge, Firefox, and Safari all produce identical,
+ * speaker-attributed transcripts with rolling PARTIAL captions during long
+ * speeches (30-60s) and seamless FINAL promotion on speech end.
+ */
 export function useGeminiTranscription({
   discussionId,
   enabled,
@@ -110,6 +143,7 @@ export function useGeminiTranscription({
   speaking,
   language = DEFAULT_LANG,
   onStored,
+  onPartial,
 }: {
   discussionId: string;
   enabled: boolean;
@@ -117,12 +151,15 @@ export function useGeminiTranscription({
   speaking: boolean;
   language?: string;
   onStored?: () => void;
+  onPartial?: (partial: AudioPartialEvent) => void;
 }) {
   const [supported, setSupported] = useState(false);
   const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
   const speakingRef = useRef(speaking);
   const onStoredRef = useRef(onStored);
+  const onPartialRef = useRef(onPartial);
   const pendingRef = useRef<AudioChunk[]>([]);
   const postingRef = useRef(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -132,12 +169,10 @@ export function useGeminiTranscription({
 
   speakingRef.current = speaking;
   onStoredRef.current = onStored;
+  onPartialRef.current = onPartial;
 
   useEffect(() => {
-    setSupported(
-      typeof window !== "undefined" &&
-        getAudioContextConstructor() !== null,
-    );
+    setSupported(typeof window !== "undefined" && getAudioContextConstructor() !== null);
   }, []);
 
   const flushPending = useCallback(async () => {
@@ -153,6 +188,9 @@ export function useGeminiTranscription({
           "x-transcript-ended-at": chunk.endedAt.toISOString(),
           "x-transcript-duration-ms": String(chunk.durationMs),
           "x-transcript-language": language,
+          "x-transcript-stream-id": chunk.streamId,
+          "x-transcript-revision": String(chunk.revision),
+          "x-transcript-mode": chunk.mode,
         });
         const response = await fetch(`/api/discussions/${discussionId}/transcript`, {
           method: "POST",
@@ -168,8 +206,13 @@ export function useGeminiTranscription({
           setError(
             details
               ? `${data.error ?? "Validation failed"}: ${details}`
-              : data.error ?? "Gemini transcription could not be completed.",
+              : data.error ?? "Transcription could not be completed.",
           );
+          if (chunk.mode === "partial") {
+            // Drop stale failed partials cleanly; the final chunk will persist the full utterance.
+            pendingRef.current.shift();
+            continue;
+          }
           if (response.status === 429) {
             retryAfterRef.current = Math.min(data.retryAfterMs ?? 0, 15_000);
             break;
@@ -182,10 +225,23 @@ export function useGeminiTranscription({
         pendingRef.current.shift();
         retryAttemptRef.current = 0;
         setError(null);
-        if (!data.skipped) onStoredRef.current?.();
+        if (!data.skipped) {
+          if (chunk.mode === "partial" && data.text) {
+            setInterim(data.text);
+            onPartialRef.current?.({
+              streamId: chunk.streamId,
+              revision: chunk.revision,
+              text: data.text,
+              startedAt: chunk.startedAt,
+            });
+          } else if (chunk.mode === "final") {
+            setInterim("");
+            onStoredRef.current?.();
+          }
+        }
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Gemini transcription could not be sent.");
+      setError(cause instanceof Error ? cause.message : "Transcription could not be sent.");
     } finally {
       postingRef.current = false;
       if (pendingRef.current.length > 0 && !retryTimerRef.current) {
@@ -203,6 +259,10 @@ export function useGeminiTranscription({
   };
 
   const enqueue = useCallback((chunk: AudioChunk) => {
+    // Avoid piling up stale partials behind queued final segments.
+    if (chunk.mode === "partial" && pendingRef.current.some((c) => c.mode === "partial")) {
+      return;
+    }
     if (pendingRef.current.length >= MAX_PENDING_CHUNKS) {
       setError("Transcription queue is full; this audio chunk could not be queued. Check your connection.");
       return;
@@ -228,12 +288,16 @@ export function useGeminiTranscription({
   useEffect(() => {
     if (!enabled || !audioTrack || !supported || audioTrack.readyState !== "live") {
       setListening(false);
+      setInterim("");
       return;
     }
 
     let disposed = false;
     let firstSpeechAt: number | null = null;
     let silenceStartedAt: number | null = null;
+    let lastPartialAt = 0;
+    let streamId = createUuid();
+    let revision = 0;
     let noiseFloor = 0.001;
     let sampleChunks: Float32Array[] = [];
     let sampleCount = 0;
@@ -264,27 +328,55 @@ export function useGeminiTranscription({
       return;
     }
 
-    const flushSamples = () => {
-      if (sampleCount === 0 || firstSpeechAt === null) return;
+    const buildSamples = () => {
       const samples = new Float32Array(sampleCount);
       let offset = 0;
       for (const chunk of sampleChunks) {
         samples.set(chunk, offset);
         offset += chunk.length;
       }
+      return samples;
+    };
+
+    const emitChunk = (mode: "partial" | "final") => {
+      if (sampleCount === 0 || firstSpeechAt === null) return;
       const durationMs = normalizeChunkDurationMs((sampleCount / context.sampleRate) * 1000);
+      if (mode === "final" && durationMs < 250) {
+        sampleChunks = [];
+        sampleCount = 0;
+        firstSpeechAt = null;
+        silenceStartedAt = null;
+        preRollChunks = [];
+        preRollSampleCount = 0;
+        streamId = createUuid();
+        revision = 0;
+        return;
+      }
+
+      const samples = buildSamples();
       enqueue({
         audio: encodePcmWav(samples, context.sampleRate),
         startedAt: new Date(firstSpeechAt),
         endedAt: new Date(firstSpeechAt + durationMs),
         durationMs,
+        streamId,
+        revision: ++revision,
+        mode,
       });
-      sampleChunks = [];
-      sampleCount = 0;
-      firstSpeechAt = null;
-      silenceStartedAt = null;
-      preRollChunks = [];
-      preRollSampleCount = 0;
+
+      if (mode === "final") {
+        sampleChunks = [];
+        sampleCount = 0;
+        firstSpeechAt = null;
+        silenceStartedAt = null;
+        lastPartialAt = 0;
+        preRollChunks = [];
+        preRollSampleCount = 0;
+        streamId = createUuid();
+        revision = 0;
+      } else {
+        lastPartialAt = Date.now();
+      }
     };
 
     const appendSamples = (samples: Float32Array) => {
@@ -308,6 +400,7 @@ export function useGeminiTranscription({
       if (firstSpeechAt === null) {
         if (speechDetected) {
           firstSpeechAt = now - (preRollSampleCount / context.sampleRate) * 1000;
+          lastPartialAt = now;
           for (const chunk of preRollChunks) appendSamples(chunk);
           appendSamples(input);
           silenceStartedAt = null;
@@ -331,10 +424,14 @@ export function useGeminiTranscription({
       }
 
       const durationMs = (sampleCount / context.sampleRate) * 1000;
-      if (shouldFinalizeAudioBuffer(durationMs, silenceStartedAt === null ? 0 : now - silenceStartedAt)) {
-        flushSamples();
+      const silenceMs = silenceStartedAt === null ? 0 : now - silenceStartedAt;
+      if (shouldFinalizeAudioBuffer(durationMs, silenceMs)) {
+        emitChunk("final");
+      } else if (durationMs >= 1400 && now - lastPartialAt >= PARTIAL_INTERVAL_MS) {
+        emitChunk("partial");
       }
     };
+
     void context.resume().catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Microphone audio processing could not start.");
     });
@@ -342,7 +439,7 @@ export function useGeminiTranscription({
 
     return () => {
       disposed = true;
-      flushSamples();
+      emitChunk("final");
       processor.onaudioprocess = null;
       source.disconnect();
       processor.disconnect();
@@ -352,5 +449,5 @@ export function useGeminiTranscription({
     };
   }, [audioTrack, enabled, enqueue, supported]);
 
-  return { supported, listening, interim: "", error };
+  return { supported, listening, interim, error };
 }

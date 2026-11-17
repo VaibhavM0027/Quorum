@@ -164,6 +164,21 @@ model Discussion {
    * already speaking.
    */
   lastAiSpokeAt         DateTime?
+  /**
+   * Server-authoritative timestamp until which the AI moderator holds the
+   * floor and participant microphones remain locked on LiveKit. Cleared early
+   * when TTS finishes, and bounded so a disconnected browser can never leave
+   * the room permanently muted.
+   */
+  aiSpeakingUntil       DateTime?
+  /** Participant currently holding the speaking floor, if any. */
+  activeSpeakerId       String?
+  /** Set while the host has paused the meeting. */
+  pausedAt              DateTime?
+  /** Ensures the AI welcome/topic introduction is posted once per session. */
+  welcomePosted         Boolean @default(false)
+  /** Ensures the AI closing summary is posted once when the meeting ends. */
+  summaryPosted         Boolean @default(false)
 
   /// Breakout rooms split a large room into groups small enough to talk in.
   /// Off by default: a discussion runs as one room until the host asks for it.
@@ -324,6 +339,7 @@ model TranscriptSegment {
   endedAt    DateTime
   durationMs Int      @default(0)
   wordCount  Int      @default(0)
+  confidence Float?
   status     TranscriptStatus @default(FINAL)
   /// Stable client-generated key that lets a live draft become its final row.
   streamId   String?
@@ -341,6 +357,7 @@ model TranscriptSegment {
   participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 
   @@index([discussionId, startedAt])
+  @@index([discussionId, status, startedAt])
   @@index([participantId])
   @@unique([participantId, streamId])
 }

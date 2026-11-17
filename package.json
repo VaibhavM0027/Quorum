@@ -4,9 +4,9 @@
   "private": true,
   "description": "AI-powered Group Discussion platform: live audio/video GD, automatic transcription, AI-assisted moderation and PDF evaluation reports.",
   "scripts": {
-    "dev": "next dev -p 4000",
+    "dev": "next dev -p 3000 -H 0.0.0.0",
     "build": "next build",
-    "start": "next start -p 4000",
+    "start": "next start -p 3000 -H 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

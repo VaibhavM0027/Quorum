@@ -23,7 +23,8 @@ import { DataPacket_Kind, RoomServiceClient } from "livekit-server-sdk";
 import { env } from "@/lib/env";
 import { livekitReady, roomNameFor } from "@/lib/livekit";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { transcribeAudioWithGemini } from "@/lib/gemini";
+import { getSttProvider } from "@/lib/stt/provider";
+import { isAiSpeakingLocked } from "@/lib/room-sync";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -160,6 +161,7 @@ export async function GET(request: Request, { params }: Params) {
           endedAt: s.endedAt.toISOString(),
           durationMs: s.durationMs,
           wordCount: s.wordCount,
+          confidence: s.confidence ?? null,
           status: s.status,
           revision: s.revision,
           updatedAt: s.updatedAt.toISOString(),
@@ -426,6 +428,10 @@ export async function POST(request: Request, { params }: Params) {
         endedAt: true,
         transcriptionEnabled: true,
         breakoutEnabled: true,
+        conversationState: true,
+        aiSpeakingUntil: true,
+        lastAiSpokeAt: true,
+        pausedAt: true,
         participants: { select: { isHost: true, breakoutRoom: true } },
       },
     });
@@ -450,6 +456,7 @@ export async function POST(request: Request, { params }: Params) {
         displayName: true,
         isHost: true,
         removed: true,
+        micLocked: true,
         transcriptionConsent: true,
       },
     });
@@ -470,6 +477,7 @@ export async function POST(request: Request, { params }: Params) {
     }
 
     let text: string;
+    let confidence: number | null = null;
     let startedAt: Date;
     let endedAt: Date;
     let durationMs: number;
@@ -484,7 +492,7 @@ export async function POST(request: Request, { params }: Params) {
 
       const mimeType = requestContentType.split(";")[0]?.toLowerCase();
       if (!mimeType || !TRANSCRIPT_AUDIO_MIME_TYPES.has(mimeType)) {
-        return fail("This audio format is not supported for Gemini transcription.", 415);
+        return fail("This audio format is not supported for transcription.", 415);
       }
 
       const metadata = transcriptAudioMetadataSchema.parse({
@@ -492,15 +500,29 @@ export async function POST(request: Request, { params }: Params) {
         endedAt: request.headers.get("x-transcript-ended-at"),
         durationMs: request.headers.get("x-transcript-duration-ms"),
         language: request.headers.get("x-transcript-language") || undefined,
+        streamId: request.headers.get("x-transcript-stream-id") || undefined,
+        revision: request.headers.get("x-transcript-revision") || undefined,
+        mode: request.headers.get("x-transcript-mode") || undefined,
       });
 
-      const roomLimit = checkRateLimit(`transcript-audio-room:${id}`, 120, 60_000);
+      // Prevent AI moderator speech or locked mics from being attributed as human speech.
+      if (
+        member.micLocked ||
+        discussion.pausedAt ||
+        (isAiSpeakingLocked(discussion, metadata.endedAt.getTime()) &&
+          discussion.lastAiSpokeAt &&
+          metadata.startedAt >= discussion.lastAiSpokeAt)
+      ) {
+        return ok({ skipped: "ai-speaking" });
+      }
+
+      const roomLimit = checkRateLimit(`transcript-audio-room:${id}`, 240, 60_000);
       if (!roomLimit.allowed) {
         return fail("Transcription is busy. Please retry shortly.", 429, {
           retryAfterMs: roomLimit.retryAfterMs,
         });
       }
-      const participantLimit = checkRateLimit(`transcript-audio:${id}:${user.id}`, 15, 60_000);
+      const participantLimit = checkRateLimit(`transcript-audio:${id}:${user.id}`, 45, 60_000);
       if (!participantLimit.allowed) {
         return fail("Transcription is busy. Please retry shortly.", 429, {
           retryAfterMs: participantLimit.retryAfterMs,
@@ -524,18 +546,102 @@ export async function POST(request: Request, { params }: Params) {
       if (totalBytes === 0) return fail("Audio chunk is empty.", 422);
 
       const audioBytes = Buffer.concat(chunks, totalBytes);
-      text = normalizeTranscript(
-        await transcribeAudioWithGemini({
-          audioBase64: audioBytes.toString("base64"),
-          mimeType,
-          language: metadata.language,
-        }),
-      );
+      const sttProvider = getSttProvider();
+      const sttInput = {
+        audioBase64: audioBytes.toString("base64"),
+        mimeType,
+        language: metadata.language,
+      };
+      const sttResult = sttProvider.transcribeDetailed
+        ? await sttProvider.transcribeDetailed(sttInput)
+        : { text: await sttProvider.transcribe(sttInput), confidence: null };
+      text = normalizeTranscript(sttResult.text);
+      confidence = sttResult.confidence;
       if (!isMeaningful(text)) return ok({ skipped: "no-speech" });
 
       startedAt = metadata.startedAt;
       endedAt = metadata.endedAt;
       durationMs = metadata.durationMs;
+      streamId = metadata.streamId;
+
+      if (metadata.mode === "partial" && streamId) {
+        const revision = metadata.revision ?? 0;
+        const partialWhere = {
+          participantId_streamId: { participantId: member.id, streamId },
+        };
+        const partialData = {
+          discussionId: id,
+          participantId: member.id,
+          streamId,
+          text,
+          startedAt,
+          endedAt: endedAt >= startedAt ? endedAt : new Date(),
+          durationMs,
+          wordCount: countWords(text),
+          confidence,
+          status: "PARTIAL" as const,
+          revision,
+        };
+        const updated = await prisma.transcriptSegment.updateMany({
+          where: {
+            participantId: member.id,
+            streamId,
+            status: "PARTIAL",
+            revision: { lte: revision },
+          },
+          data: partialData,
+        });
+        if (updated.count === 0) {
+          const existing = await prisma.transcriptSegment.findUnique({ where: partialWhere });
+          if (existing) {
+            return ok({ stored: false, status: existing.status, text: existing.text });
+          }
+          await prisma.transcriptSegment.create({ data: partialData }).catch(() => null);
+        }
+        await prisma.discussionParticipant.update({
+          where: { id: member.id },
+          data: { transcribing: true, transcribingAt: new Date() },
+        });
+        if (livekitReady()) {
+          try {
+            const roomService = new RoomServiceClient(
+              env.livekitHost,
+              env.livekitApiKey,
+              env.livekitApiSecret,
+            );
+            const expectedRooms = new Set([roomNameFor(id)]);
+            if (discussion.breakoutEnabled) {
+              for (const p of discussion.participants) {
+                if (!p.isHost && p.breakoutRoom !== null) {
+                  expectedRooms.add(roomNameFor(id, p.breakoutRoom));
+                }
+              }
+            }
+            const activeRooms = await roomService.listRooms([...expectedRooms]);
+            const payload = new TextEncoder().encode(
+              JSON.stringify({
+                type: "partial",
+                streamId,
+                text,
+                startedAt: startedAt.toISOString(),
+                revision,
+                participantIdentity: user.id,
+                participantName: member.displayName,
+              }),
+            );
+            await Promise.allSettled(
+              activeRooms.map((room) =>
+                roomService.sendData(room.name, payload, DataPacket_Kind.RELIABLE, {
+                  topic: TRANSCRIPT_PARTIAL_TOPIC,
+                }),
+              ),
+            );
+          } catch {
+            /* clients also poll */
+          }
+        }
+        return ok({ stored: true, status: "PARTIAL", streamId, revision, text });
+      }
     } else {
       const finalLimit = checkRateLimit(`transcript-final:${id}:${user.id}`, 120, 60_000);
       if (!finalLimit.allowed) {
@@ -545,6 +651,7 @@ export async function POST(request: Request, { params }: Params) {
       }
       const body = transcriptSegmentSchema.parse(await readJson(request));
       text = normalizeTranscript(body.text);
+      confidence = typeof body.confidence === "number" ? body.confidence : null;
       startedAt = body.startedAt;
       endedAt = body.endedAt;
       durationMs = body.durationMs;
@@ -570,6 +677,7 @@ export async function POST(request: Request, { params }: Params) {
       endedAt: true,
       durationMs: true,
       wordCount: true,
+      confidence: true,
       status: true,
       revision: true,
     };
@@ -627,6 +735,7 @@ export async function POST(request: Request, { params }: Params) {
       endedAt,
       durationMs,
       wordCount: countWords(text),
+      confidence,
       status: "FINAL" as const,
       streamId: streamId ?? null,
     };

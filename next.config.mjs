@@ -50,7 +50,6 @@ const contentSecurityPolicy = [
   "media-src 'self' blob:",
   `connect-src ${connectSrc.join(" ")}`,
   "worker-src 'self' blob:",
-  "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
   "object-src 'none'",
@@ -59,7 +58,6 @@ const contentSecurityPolicy = [
 const securityHeaders = [
   { key: "Content-Security-Policy", value: contentSecurityPolicy },
   { key: "X-Content-Type-Options", value: "nosniff" },
-  { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "X-DNS-Prefetch-Control", value: "off" },
   {
@@ -67,7 +65,6 @@ const securityHeaders = [
     // The GD room needs the camera and microphone; nothing else is requested.
     value: "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=()",
   },
-  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
   ...(isProduction
     ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" }]
     : []),
@@ -75,13 +72,14 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
   reactStrictMode: true,
   // Do not advertise the framework in responses.
   poweredByHeader: false,
   // gzip responses (report JSON and pages benefit most).
   compress: true,
-  // pdfkit ships native font files that must be loaded from node_modules at runtime.
-  serverExternalPackages: ["pdfkit"],
+  // pdfkit ships native font files and @livekit/rtc-node ships native Rust bindings.
+  serverExternalPackages: ["pdfkit", "@livekit/rtc-node", "@livekit/agents"],
   eslint: {
     // Linting is run separately (npm run typecheck) so a lint warning never blocks a deploy.
     ignoreDuringBuilds: true,

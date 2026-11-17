@@ -27,9 +27,12 @@ import {
   Sparkles,
   Circle,
   UsersRound,
+  Pause,
+  Lock,
 } from "lucide-react";
 import MediaTrack from "@/components/MediaTrack";
 import GdTable from "@/components/GdTable";
+import PreJoinLobby, { type PreJoinResult } from "@/components/PreJoinLobby";
 import BreakoutPanel, { type BreakoutCommand } from "@/components/BreakoutPanel";
 import LiveMonitorPanel, {
   type LiveStat,
@@ -37,21 +40,16 @@ import LiveMonitorPanel, {
 } from "@/components/LiveMonitorPanel";
 import { useLivekitRoom, type TranscriptDraftMessage } from "@/hooks/useLivekitRoom";
 import {
-  useSpeechTranscription,
-  type FinalSegment,
-  type PartialSegment,
-} from "@/hooks/useSpeechTranscription";
-import { useGeminiTranscription } from "@/hooks/useGeminiTranscription";
+  useGeminiTranscription,
+  type AudioPartialEvent,
+} from "@/hooks/useGeminiTranscription";
 import { useAssistantVoice } from "@/hooks/useAssistantVoice";
 import { useRoomRecorder } from "@/hooks/useRoomRecorder";
 import { usePresenceReporter } from "@/hooks/usePresenceReporter";
 import { CONVERSATION_STATE_LABEL, coerceConversationState } from "@/lib/conversation-state";
 import { transcriptLog } from "@/lib/debug-log";
-import {
-  shouldApplyTranscriptDraft,
-  shouldClearTranscriptDraft,
-  shouldUseGeminiAudioFallback,
-} from "@/lib/transcript";
+import type { RoomStateBroadcast } from "@/lib/livekit";
+import { shouldApplyTranscriptDraft, shouldClearTranscriptDraft } from "@/lib/transcript";
 
 export type RoomParticipant = {
   id: string;
@@ -87,6 +85,10 @@ export type RoomDiscussion = {
   inviteResponseSec: number;
   /** What the conversation-management engine believes the room is doing. */
   conversationState: string;
+  aiSpeaking?: boolean;
+  paused?: boolean;
+  activeSpeakerId?: string | null;
+  serverSttActive?: boolean;
   breakoutEnabled: boolean;
   breakoutGroupSize: number;
   scheduledAt: string;
@@ -110,6 +112,7 @@ type TranscriptEntry = {
   startedAt: string;
   durationMs: number;
   wordCount: number;
+  confidence?: number | null;
   status: "PARTIAL" | "FINAL";
   revision: number;
   updatedAt: string;
@@ -117,8 +120,8 @@ type TranscriptEntry = {
 
 const POLL_MS = 5000;
 const TRANSCRIPT_POLL_MS = 4000;
-const AI_EVENTS_POLL_MS = 6000;
-const AI_TICK_MS = 15_000;
+const AI_EVENTS_POLL_MS = 2500;
+const AI_TICK_MS = 4000;
 
 /** How long without speaking before the monitor marks someone as quiet. */
 const QUIET_AFTER_MS = 120_000;
@@ -153,15 +156,24 @@ type ParticipationEntry = {
 };
 
 const AI_KIND_LABEL: Record<string, string> = {
+  WELCOME: "Welcome",
   QUESTION: "Question",
   NUDGE: "Invitation",
   SILENCE: "Silence",
   RELEVANCE: "Stay on topic",
+  FOLLOW_UP: "Follow-up",
   SUMMARY: "Summary",
 };
 
 /** Assistant messages that are read aloud as well as shown in the card. */
-const SPOKEN_AI_KINDS = new Set(["QUESTION", "NUDGE", "SILENCE", "RELEVANCE"]);
+const SPOKEN_AI_KINDS = new Set([
+  "WELCOME",
+  "QUESTION",
+  "NUDGE",
+  "SILENCE",
+  "RELEVANCE",
+  "FOLLOW_UP",
+]);
 
 /**
  * How long the room counts down for when the server did not stamp a usable
@@ -186,6 +198,8 @@ export default function RoomClient({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [lobbyResult, setLobbyResult] = useState<PreJoinResult | null>(null);
+  const [roomState, setRoomState] = useState<RoomStateBroadcast | null>(null);
 
   const isLive = discussion.status === "LIVE";
 
@@ -204,9 +218,16 @@ export default function RoomClient({
   const media = useLivekitRoom(
     discussion.id,
     myBreakoutRoom,
-    isLive && Boolean(participantId),
+    isLive && Boolean(participantId) && Boolean(lobbyResult),
     () => transcriptRefreshRef.current(),
     (message) => transcriptDraftHandlerRef.current(message),
+    {
+      initialMicEnabled: lobbyResult?.micEnabled ?? false,
+      initialCamEnabled: lobbyResult?.camEnabled ?? false,
+      audioDeviceId: lobbyResult?.audioDeviceId,
+      videoDeviceId: lobbyResult?.videoDeviceId,
+      onRoomState: setRoomState,
+    },
   );
   const localAudioTile = media.tiles.find((tile) => tile.isLocal);
   const localSpeaking = localAudioTile?.speaking ?? false;
@@ -301,19 +322,6 @@ export default function RoomClient({
     return () => clearInterval(timer);
   }, [discussion.transcriptionEnabled, discussion.status, loadTranscript]);
 
-  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
-  const partialPersistenceRef = useRef<{
-    lastSentAt: number;
-    queued: PartialSegment | null;
-    timer: ReturnType<typeof setTimeout> | null;
-  }>({ lastSentAt: 0, queued: null, timer: null });
-  const finalQueueRef = useRef<FinalSegment[]>([]);
-  const finalPostingRef = useRef(false);
-  const finalRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const finalRetryAttemptRef = useRef(0);
-  const finalRetryAfterRef = useRef(0);
-  const finalFlushRef = useRef<() => void>(() => {});
-
   const acceptRealtimeDraft = useCallback(
     (message: TranscriptDraftMessage) => {
       transcriptLoadVersionRef.current += 1;
@@ -358,276 +366,61 @@ export default function RoomClient({
   );
   transcriptDraftHandlerRef.current = acceptRealtimeDraft;
 
-  const persistPartial = useCallback(
-    async (partial: PartialSegment) => {
-      const response = await fetch(`/api/discussions/${discussion.id}/transcript`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          streamId: partial.streamId,
-          revision: partial.revision,
-          text: partial.text,
-          startedAt: partial.startedAt.toISOString(),
-        }),
-      });
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Could not synchronize the live transcript.");
-    },
-    [discussion.id],
-  );
+  // Synchronized lock state: host lock, AI moderator speaking, meeting paused, or SFU revocation.
+  const myLocked = Boolean(myMembership && !myMembership.removed && myMembership.micLocked);
+  const roomPaused = roomState?.paused ?? discussion.paused ?? false;
+  const roomAiLocked = Boolean(roomState?.aiSpeaking) || Boolean(discussion.aiSpeaking);
+  const micHardLocked = myLocked || roomAiLocked || roomPaused || !media.sfuCanPublish;
 
-  const savePartial = useCallback(
-    (partial: PartialSegment) => {
-      void persistPartial(partial)
-        .then(() => {
-          const queued = partialPersistenceRef.current.queued;
-          if (
-            queued?.streamId === partial.streamId &&
-            queued.revision <= partial.revision
-          ) {
-            partialPersistenceRef.current.queued = null;
-          }
-        })
-        .catch((cause: unknown) => {
-          const queued = partialPersistenceRef.current.queued;
-          if (
-            !queued ||
-            queued.streamId !== partial.streamId ||
-            queued.revision < partial.revision
-          ) {
-            partialPersistenceRef.current.queued = partial;
-          }
-          setTranscriptionError(
-            cause instanceof Error ? cause.message : "Could not synchronize the live transcript.",
-          );
-        });
-    },
-    [persistPartial],
-  );
+  // Transcription follows the active microphone and consent: never captures
+  // while muted, paused, or while the AI moderator is speaking.
+  const shouldTranscribe =
+    isLive &&
+    discussion.transcriptionEnabled &&
+    consented &&
+    Boolean(participantId) &&
+    !micHardLocked &&
+    media.micEnabled;
+  const transcriptionActive =
+    shouldTranscribe &&
+    media.status === "connected" &&
+    localAudioTile?.audioTrack?.readyState === "live";
 
-  const handlePartial = useCallback(
-    (partial: PartialSegment) => {
-      transcriptLoadVersionRef.current += 1;
-      const persistence = partialPersistenceRef.current;
-      if (!partial.active) {
-        if (persistence.timer) clearTimeout(persistence.timer);
-        persistence.timer = null;
-        if (persistence.queued?.streamId === partial.streamId) persistence.queued = null;
-        media.publishTranscriptDraft({
-          type: "partial-cleared",
-          streamId: partial.streamId,
-          revision: partial.revision,
-        });
-        setSegments((current) =>
-          current.filter((entry) => !(entry.id === partial.streamId && entry.status === "PARTIAL")),
-        );
-        void fetch(
-          `/api/discussions/${discussion.id}/transcript?streamId=${encodeURIComponent(partial.streamId)}&revision=${partial.revision}`,
-          { method: "DELETE", keepalive: true },
-        )
-          .then(async (response) => {
-            if (response.ok) return;
-            const data = (await response.json().catch(() => ({}))) as { error?: string };
-            setTranscriptionError(data.error ?? "Could not clear the live transcript draft.");
-          })
-          .catch((cause: unknown) => {
-            setTranscriptionError(
-              cause instanceof Error ? cause.message : "Could not clear the live transcript draft.",
-            );
-          });
-        return;
-      }
-
-      const entry: TranscriptEntry = {
-        id: partial.streamId,
+  const publishTranscriptDraft = media.publishTranscriptDraft;
+  const handleGeminiPartial = useCallback(
+    (partial: AudioPartialEvent) => {
+      acceptRealtimeDraft({
+        type: "partial",
         streamId: partial.streamId,
         revision: partial.revision,
-        participantId: myMembership?.id ?? "",
-        participantIdentity: user.id,
-        speaker: myMembership?.name ?? user.name,
-        speakerIsHost: myMembership?.isHost ?? false,
         text: partial.text,
         startedAt: partial.startedAt.toISOString(),
-        durationMs: 0,
-        wordCount: partial.text.trim().split(/\s+/).filter(Boolean).length,
-        status: "PARTIAL",
-        updatedAt: new Date().toISOString(),
-      };
-      setSegments((current) =>
-        [...current.filter((item) => item.id !== entry.id), entry].sort(
-          (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
-        ),
-      );
-      media.publishTranscriptDraft({
+        participantIdentity: user.id,
+        participantName: myMembership?.name ?? user.name,
+      });
+      publishTranscriptDraft({
         type: "partial",
         streamId: partial.streamId,
         revision: partial.revision,
         text: partial.text,
         startedAt: partial.startedAt.toISOString(),
       });
-
-      persistence.queued = partial;
-      const now = Date.now();
-      const waitMs = Math.max(0, 1800 - (now - persistence.lastSentAt));
-      if (waitMs === 0) {
-        persistence.lastSentAt = now;
-        persistence.queued = null;
-        savePartial(partial);
-      } else if (!persistence.timer) {
-        persistence.timer = setTimeout(() => {
-          persistence.timer = null;
-          const queued = persistence.queued;
-          persistence.queued = null;
-          if (!queued) return;
-          persistence.lastSentAt = Date.now();
-          savePartial(queued);
-        }, waitMs);
-      }
     },
-    [discussion.id, media.publishTranscriptDraft, myMembership, savePartial, user.id, user.name],
+    [acceptRealtimeDraft, publishTranscriptDraft, myMembership?.name, user.id, user.name],
   );
 
-  const flushFinals = useCallback(async () => {
-    if (finalPostingRef.current || finalQueueRef.current.length === 0) return;
-    finalPostingRef.current = true;
-    try {
-      while (finalQueueRef.current.length > 0) {
-        const segment = finalQueueRef.current[0];
-        const response = await fetch(`/api/discussions/${discussion.id}/transcript`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            streamId: segment.streamId,
-            text: segment.text,
-            startedAt: segment.startedAt.toISOString(),
-            endedAt: segment.endedAt.toISOString(),
-            durationMs: segment.durationMs,
-          }),
-        });
-        const data = (await response.json().catch(() => ({}))) as {
-          error?: string;
-          retryAfterMs?: number;
-        };
-        if (!response.ok) {
-          if (response.status === 408 || response.status === 429 || response.status >= 500) {
-            finalRetryAfterRef.current = data.retryAfterMs ?? 0;
-            throw new Error(data.error ?? "Final transcript could not be saved.");
-          }
-          finalQueueRef.current.shift();
-          setTranscriptionError(data.error ?? "Final transcript could not be saved.");
-          continue;
-        }
-
-        finalQueueRef.current.shift();
-        finalRetryAttemptRef.current = 0;
-        finalRetryAfterRef.current = 0;
-        setTranscriptionError(null);
-        void loadTranscript();
-      }
-    } catch (cause) {
-      setTranscriptionError(
-        cause instanceof Error ? cause.message : "Final transcript could not be saved.",
-      );
-    } finally {
-      finalPostingRef.current = false;
-      if (finalQueueRef.current.length > 0 && !finalRetryTimerRef.current) {
-        const delay = Math.max(
-          finalRetryAfterRef.current,
-          Math.min(1000 * 2 ** finalRetryAttemptRef.current++, 15_000),
-        );
-        finalRetryTimerRef.current = setTimeout(() => {
-          finalRetryTimerRef.current = null;
-          finalFlushRef.current();
-        }, delay);
-      }
-    }
-  }, [discussion.id, loadTranscript]);
-  finalFlushRef.current = () => {
-    void flushFinals();
-  };
-
-  const submitFinal = useCallback(
-    (segment: FinalSegment) => {
-      transcriptLoadVersionRef.current += 1;
-      const entry: TranscriptEntry = {
-        id: segment.streamId,
-        streamId: segment.streamId,
-        participantId: myMembership?.id ?? "",
-        participantIdentity: user.id,
-        speaker: myMembership?.name ?? user.name,
-        speakerIsHost: myMembership?.isHost ?? false,
-        text: segment.text,
-        startedAt: segment.startedAt.toISOString(),
-        durationMs: segment.durationMs,
-        wordCount: segment.text.trim().split(/\s+/).filter(Boolean).length,
-        status: "FINAL",
-        revision: 0,
-        updatedAt: new Date().toISOString(),
-      };
-      setSegments((current) =>
-        [...current.filter((item) => item.id !== entry.id), entry].sort(
-          (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
-        ),
-      );
-      finalQueueRef.current.push(segment);
-      finalFlushRef.current();
-    },
-    [myMembership, user.id, user.name],
-  );
-
-  useEffect(() => {
-    const retryWhenOnline = () => {
-      finalFlushRef.current();
-      const persistence = partialPersistenceRef.current;
-      const queued = persistence.queued;
-      if (queued) {
-        persistence.queued = null;
-        persistence.lastSentAt = Date.now();
-        savePartial(queued);
-      }
-    };
-    window.addEventListener("online", retryWhenOnline);
-    return () => {
-      window.removeEventListener("online", retryWhenOnline);
-      if (finalRetryTimerRef.current) clearTimeout(finalRetryTimerRef.current);
-      if (partialPersistenceRef.current.timer) clearTimeout(partialPersistenceRef.current.timer);
-    };
-  }, [savePartial]);
-
-  // Transcription follows the microphone, not the consent tick-box: a muted
-  // participant must never have audio captured, and nothing may be transcribed
-  // from a room the participant is only listening to.
-  const shouldTranscribe =
-    isLive &&
-    discussion.transcriptionEnabled &&
-    consented &&
-    Boolean(participantId) &&
-    media.micEnabled;
-  const transcriptionActive =
-    shouldTranscribe &&
-    media.status === "connected" &&
-    localAudioTile?.audioTrack?.readyState === "live";
-  const browserSpeech = useSpeechTranscription({
-    enabled: transcriptionActive,
-    onSegment: submitFinal,
-    onPartial: handlePartial,
-  });
-  const useGeminiFallback = shouldUseGeminiAudioFallback(
-    browserSpeech.supported,
-    browserSpeech.error,
-  );
   const geminiSpeech = useGeminiTranscription({
     discussionId: discussion.id,
-    enabled: transcriptionActive && useGeminiFallback,
+    enabled: transcriptionActive && !media.serverSttActive,
     audioTrack: localAudioTile?.audioTrack ?? null,
     speaking: localSpeaking,
+    onPartial: handleGeminiPartial,
     onStored: () => transcriptRefreshRef.current(),
   });
-  const speech = useGeminiFallback ? geminiSpeech : browserSpeech;
   const canTranscribe =
-    transcriptionActive &&
-    speech.listening &&
-    Boolean(localAudioTile?.audioTrack);
+    shouldTranscribe &&
+    media.status === "connected" &&
+    (media.serverSttActive || (geminiSpeech.listening && Boolean(localAudioTile?.audioTrack)));
 
   // Keep the transcript pinned to the newest line.
   useEffect(() => {
@@ -650,10 +443,6 @@ export default function RoomClient({
 
   /**
    * State, in the browser's own log, whether this participant is capturing.
-   *
-   * "No transcript from me" has several unrelated causes — missing consent, a
-   * muted microphone, a discussion that is not live, or unsupported audio
-   * capture. Naming the one that applies makes it diagnosable.
    */
   useEffect(() => {
     if (!isLive || !discussion.transcriptionEnabled) return;
@@ -661,30 +450,35 @@ export default function RoomClient({
       participantId,
       consented,
       micEnabled: media.micEnabled,
-      browserSupportsStreamingSpeech: browserSpeech.supported,
-      supportsGeminiAudioCapture: geminiSpeech.supported,
+      micHardLocked,
+      serverSttActive: media.serverSttActive,
+      supportsAudioCapture: geminiSpeech.supported,
       reason: canTranscribe
         ? undefined
         : !participantId
           ? "not a member of this discussion"
           : !consented
             ? "transcription consent not given"
-            : !browserSpeech.supported && !geminiSpeech.supported
-              ? "browser cannot record microphone audio"
-              : !localAudioTile?.audioTrack
-                ? "local microphone track is unavailable"
-              : !media.micEnabled
-                ? "microphone is off"
-                : "discussion is not live",
+            : micHardLocked
+              ? "microphone is locked"
+              : !media.serverSttActive && !geminiSpeech.supported
+                ? "browser cannot record microphone audio"
+                : !media.serverSttActive && !localAudioTile?.audioTrack
+                  ? "local microphone track is unavailable"
+                  : !media.micEnabled
+                    ? "microphone is off"
+                    : "discussion is not live",
     });
   }, [
     canTranscribe,
     consented,
     discussion.transcriptionEnabled,
     isLive,
+    localAudioTile?.audioTrack,
     media.micEnabled,
+    media.serverSttActive,
+    micHardLocked,
     participantId,
-    browserSpeech.supported,
     geminiSpeech.supported,
   ]);
 
@@ -713,10 +507,30 @@ export default function RoomClient({
   // ---- AI discussion assistant --------------------------------------------
   const [aiEvents, setAiEvents] = useState<AiEventEntry[]>([]);
 
+  const notifyAiSpeaking = useCallback(
+    (speaking: boolean, estimatedDurationMs?: number) => {
+      if (!discussion.aiEnabled || discussion.status !== "LIVE") return;
+      void fetch(`/api/discussions/${discussion.id}/ai/speaking`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          speaking,
+          ...(typeof estimatedDurationMs === "number" ? { estimatedDurationMs } : {}),
+        }),
+      })
+        .then(() => refresh())
+        .catch(() => {});
+    },
+    [discussion.aiEnabled, discussion.id, discussion.status, refresh],
+  );
+
   // The moderator speaks its messages aloud. It holds its tongue while a
-  // participant is talking, so it never interrupts the discussion.
+  // participant is talking or the meeting is paused, so it never interrupts.
   const someoneSpeaking = useMemo(() => media.tiles.some((tile) => tile.speaking), [media.tiles]);
-  const voice = useAssistantVoice({ hold: someoneSpeaking });
+  const voice = useAssistantVoice({
+    hold: someoneSpeaking || roomPaused,
+    onSpeakingChange: notifyAiSpeaking,
+  });
   /** Kept in a ref so the polling loop below never restarts when voice state changes. */
   const announceRef = useRef(voice.announce);
   useEffect(() => {
@@ -725,16 +539,11 @@ export default function RoomClient({
 
   /** Ids already seen, so a message is spoken once and only once. */
   const seenAiEventIds = useRef(new Set<string>());
-  /** The first payload is the backlog: it is shown, but never read aloud. */
+  /** The first payload is the backlog: shown, only reading brand-new welcomes (<12s). */
   const aiEventsPrimed = useRef(false);
 
   /**
    * The countdown the room is currently watching.
-   *
-   * The server stamps `dueAt` on the announcement; this browser turns that into
-   * a local deadline the first time it sees the event. Counting from the moment
-   * the event arrived, using the server's own window, means two machines whose
-   * clocks disagree still show the same number of seconds.
    */
   const countdownRef = useRef<{ id: string; endsAt: number; label: string | null } | null>(null);
 
@@ -745,10 +554,6 @@ export default function RoomClient({
       const data = (await res.json()) as { events: AiEventEntry[] };
       setAiEvents(data.events);
 
-      // The newest announcement the room is still waiting on: the moderator's
-      // invitation to a participant, or its earlier warning that one is coming.
-      // The deadline is cleared server-side the moment the participant answers,
-      // so an answered invitation stops the countdown on the next poll.
       const announced = [...data.events]
         .reverse()
         .find((event) => (event.kind === "NUDGE" || event.kind === "SILENCE") && event.dueAt);
@@ -769,10 +574,18 @@ export default function RoomClient({
       for (const event of data.events) seenAiEventIds.current.add(event.id);
       if (!aiEventsPrimed.current) {
         aiEventsPrimed.current = true;
+        // Speak a brand-new opening welcome if the host just started the meeting.
+        for (const event of fresh) {
+          if (
+            SPOKEN_AI_KINDS.has(event.kind) &&
+            Date.now() - new Date(event.createdAt).getTime() <= 12_000
+          ) {
+            announceRef.current(event.message);
+          }
+        }
         return;
       }
       for (const event of fresh) {
-        // Verbatim: the sentence on screen is the sentence that is spoken.
         if (SPOKEN_AI_KINDS.has(event.kind)) announceRef.current(event.message);
       }
     } catch {
@@ -790,17 +603,17 @@ export default function RoomClient({
   }, [initial.id, loadAiEvents]);
 
   useEffect(() => {
-    if (!discussion.aiEnabled || discussion.status !== "LIVE") return;
+    if (!discussion.aiEnabled || discussion.status !== "LIVE" || roomPaused) return;
     void loadAiEvents();
     const eventsTimer = setInterval(() => void loadAiEvents(), AI_EVENTS_POLL_MS);
     const tickTimer = setInterval(() => void runAiTick(), AI_TICK_MS);
-    const kickoff = setTimeout(() => void runAiTick(), 3000);
+    const kickoff = setTimeout(() => void runAiTick(), 1200);
     return () => {
       clearInterval(eventsTimer);
       clearInterval(tickTimer);
       clearTimeout(kickoff);
     };
-  }, [discussion.aiEnabled, discussion.status, loadAiEvents, runAiTick]);
+  }, [discussion.aiEnabled, discussion.status, roomPaused, loadAiEvents, runAiTick]);
 
   /**
    * Seconds left on the assistant's current invitation, counted down from the
@@ -990,12 +803,12 @@ export default function RoomClient({
     [discussion.id, refresh],
   );
 
-  // A host's mic lock is enforced on the client it applies to.
-  const myLocked = Boolean(myMembership && !myMembership.removed && myMembership.micLocked);
+  // Authoritative microphone lock: whenever the host locks this mic, the AI
+  // moderator starts speaking, or the meeting pauses, release local capture immediately.
   const setMic = media.setMic;
   useEffect(() => {
-    if (myLocked && media.micEnabled) void setMic(false);
-  }, [myLocked, media.micEnabled, setMic]);
+    if (micHardLocked && media.micEnabled) void setMic(false);
+  }, [micHardLocked, media.micEnabled, setMic]);
 
   const removed = Boolean(myMembership?.removed);
   const disconnect = media.disconnect;
@@ -1007,17 +820,29 @@ export default function RoomClient({
   usePresenceReporter({
     discussionId: discussion.id,
     enabled: isLive && Boolean(participantId) && !removed && media.status === "connected",
-    speaking: localSpeaking,
+    speaking: localSpeaking && !micHardLocked,
     aiSpeaking: voice.speaking,
-    // The local recorder actually running is what proves capture is active.
-    transcribing: speech.listening,
+    transcribing: Boolean(
+      transcriptionActive && (media.serverSttActive || geminiSpeech.listening),
+    ),
   });
 
-  /** What the conversation engine believes the room is doing right now. */
-  const conversationState = coerceConversationState(discussion.conversationState);
+  /** Synchronized conversation state across all participants. */
+  const conversationState = coerceConversationState(
+    roomState?.conversationState ?? discussion.conversationState,
+  );
+  const effectiveAiSpeaking = roomAiLocked || voice.speaking;
+  const activeSpeakerId = roomState?.activeSpeakerId ?? discussion.activeSpeakerId ?? null;
+  const turnQueue = roomState?.turnQueue ?? [];
+  const invitedParticipantId = useMemo(() => {
+    const announced = [...aiEvents]
+      .reverse()
+      .find((event) => (event.kind === "NUDGE" || event.kind === "SILENCE") && event.dueAt);
+    return announced?.participantId ?? null;
+  }, [aiEvents]);
 
   const control = useCallback(
-    async (action: "start" | "end") => {
+    async (action: "start" | "pause" | "resume" | "end") => {
       setBusy(true);
       setError(null);
       try {
@@ -1029,6 +854,9 @@ export default function RoomClient({
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         if (!res.ok) throw new Error(data.error ?? "Could not update the discussion");
         await refresh();
+        if (action === "start" || action === "resume") {
+          void loadAiEvents();
+        }
 
         // Ending the discussion kicks off the evaluation so reports are ready.
         if (action === "end") {
@@ -1053,7 +881,7 @@ export default function RoomClient({
         setBusy(false);
       }
     },
-    [discussion.id, refresh],
+    [discussion.id, loadAiEvents, refresh],
   );
 
   const leave = useCallback(async () => {
@@ -1091,6 +919,24 @@ export default function RoomClient({
   }, [discussion.startedAt, discussion.endedAt, now]);
 
   const remoteWithAudio = media.tiles.filter((tile) => !tile.isLocal && tile.audioTrack);
+
+  if ((discussion.status === "SCHEDULED" || discussion.status === "LIVE") && !lobbyResult && !removed) {
+    return (
+      <PreJoinLobby
+        discussionId={discussion.id}
+        title={discussion.title}
+        topic={discussion.topic}
+        mode={discussion.mode}
+        userName={user.name}
+        transcriptionEnabled={discussion.transcriptionEnabled}
+        initialConsent={consented}
+        onEnter={(res) => {
+          setLobbyResult(res);
+          void refresh();
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -1159,9 +1005,26 @@ export default function RoomClient({
           </button>
         )}
         {discussion.isHost && isLive && (
-          <button type="button" className="btn-danger" onClick={() => control("end")} disabled={busy}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />} End
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => control(roomPaused ? "resume" : "pause")}
+              disabled={busy}
+            >
+              {busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : roomPaused ? (
+                <Play className="h-4 w-4 text-accent" />
+              ) : (
+                <Pause className="h-4 w-4 text-warn" />
+              )}
+              {roomPaused ? "Resume" : "Pause"}
+            </button>
+            <button type="button" className="btn-danger" onClick={() => control("end")} disabled={busy}>
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />} End
+            </button>
+          </>
         )}
       </header>
 
@@ -1184,9 +1047,23 @@ export default function RoomClient({
         </p>
       )}
 
-      {myLocked && !removed && (
+      {isLive && effectiveAiSpeaking && !removed && (
+        <p className="flex items-center gap-2 border-b border-accent/50 bg-accent/15 px-5 py-2 text-sm font-medium text-accent">
+          <Lock className="h-4 w-4 shrink-0" />
+          AI Moderator is speaking – Microphones locked until the moderator finishes.
+        </p>
+      )}
+
+      {isLive && roomPaused && !effectiveAiSpeaking && !removed && (
         <p className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm text-warn">
-          <MicOff className="h-4 w-4" /> Your microphone was muted by the host.
+          <Pause className="h-4 w-4 shrink-0" />
+          Meeting paused by the host — microphones are locked until resumed.
+        </p>
+      )}
+
+      {myLocked && !removed && !effectiveAiSpeaking && !roomPaused && (
+        <p className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm text-warn">
+          <MicOff className="h-4 w-4" /> Your microphone was locked by the host.
         </p>
       )}
 
@@ -1204,11 +1081,9 @@ export default function RoomClient({
         <div className="flex flex-wrap items-center gap-3 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm">
           <ShieldCheck className="h-4 w-4 text-warn" />
           <span className="text-warn">
-          {browserSpeech.supported
-            ? "Live transcription is on. Your browser's speech-recognition service transcribes your microphone and shares live captions with the room. The session audio is also recorded for review. Your microphone stays off until you turn it on."
-            : geminiSpeech.supported
-              ? "Live transcription is on. When your microphone is on, short audio clips are sent to Gemini for transcription and shared with the room. The session audio is also recorded for review. Your microphone stays off until you turn it on."
-              : "Live transcription is on and the session audio is recorded for review, but this browser does not support microphone transcription."}
+            {media.serverSttActive || geminiSpeech.supported
+              ? "Live transcription is on. Whenever your microphone is unmuted, your speech is transcribed independently and shared with the room. Your microphone stays off when locked or muted."
+              : "Live transcription is on, but audio capture is unavailable in this browser environment."}
           </span>
           <button
             type="button"
@@ -1240,13 +1115,18 @@ export default function RoomClient({
         <section className="flex flex-col gap-4">
           {isLive ? (
             <>
-              {/* Everyone is seated around the table at their own numbered seat,
-                  so the room reads as a real discussion rather than a grid. */}
               <GdTable
                 participants={discussion.participants}
                 tiles={media.tiles}
                 maxSeats={discussion.maxParticipants}
                 selfUserId={user.id}
+                aiEnabled={discussion.aiEnabled}
+                aiSpeaking={effectiveAiSpeaking}
+                conversationState={conversationState}
+                activeSpeakerId={activeSpeakerId}
+                turnQueue={turnQueue}
+                paused={roomPaused}
+                invitedParticipantId={invitedParticipantId}
               />
               {media.status !== "connected" && (
                 <div className="card flex min-h-[90px] flex-col items-center justify-center gap-2 text-sm text-muted">
@@ -1273,11 +1153,31 @@ export default function RoomClient({
                 <button
                   type="button"
                   onClick={() => void media.toggleMic()}
-                  disabled={media.status !== "connected" || myLocked || removed}
-                  className={media.micEnabled ? "btn-primary" : "btn-ghost"}
+                  disabled={media.status !== "connected" || micHardLocked || removed}
+                  className={
+                    micHardLocked
+                      ? "btn-ghost cursor-not-allowed opacity-70"
+                      : media.micEnabled
+                        ? "btn-primary"
+                        : "btn-ghost"
+                  }
                 >
-                  {media.micEnabled ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-                  {myLocked ? "Microphone locked" : media.micEnabled ? "Microphone on" : "Microphone off"}
+                  {micHardLocked ? (
+                    <Lock className="h-4 w-4 text-warn" />
+                  ) : media.micEnabled ? (
+                    <Mic className="h-4 w-4" />
+                  ) : (
+                    <MicOff className="h-4 w-4" />
+                  )}
+                  {effectiveAiSpeaking
+                    ? "Locked (AI speaking)"
+                    : roomPaused
+                      ? "Locked (Paused)"
+                      : micHardLocked
+                        ? "Microphone locked"
+                        : media.micEnabled
+                          ? "Microphone on"
+                          : "Microphone off"}
                 </button>
                 <button
                   type="button"
@@ -1288,6 +1188,11 @@ export default function RoomClient({
                   {media.camEnabled ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
                   {media.camEnabled ? "Camera on" : "Camera off"}
                 </button>
+                {turnQueue.length > 0 && (
+                  <span className="pill ml-auto text-xs text-warn">
+                    Turn queue: {turnQueue.length} waiting
+                  </span>
+                )}
               </div>
             </>
           ) : (
@@ -1336,36 +1241,34 @@ export default function RoomClient({
               <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
                 <ScrollText className="h-4 w-4" /> Live transcript
                 <span className="ml-auto text-xs font-normal normal-case">
-                  {!browserSpeech.supported && !geminiSpeech.supported
+                  {!media.serverSttActive && !geminiSpeech.supported
                     ? "transcription unavailable"
                     : canTranscribe
-                      ? speech.listening
-                        ? "listening"
-                        : "starting…"
+                      ? media.serverSttActive
+                        ? "server STT active"
+                        : geminiSpeech.listening
+                          ? "listening"
+                          : "starting…"
                       : consented
-                        ? media.micEnabled
-                          ? "paused"
-                          : "mic off"
+                        ? micHardLocked
+                          ? "mic locked"
+                          : media.micEnabled
+                            ? "paused"
+                            : "mic off"
                         : isLive
                           ? "consent needed"
                           : "offline"}
                 </span>
               </h2>
 
-              {useGeminiFallback && browserSpeech.supported && !speech.error && (
-                <p className="mt-2 text-xs text-muted">
-                  Browser streaming recognition is unavailable; using Gemini audio transcription.
-                </p>
+              {geminiSpeech.error && (
+                <p className="mt-2 text-xs text-danger">{geminiSpeech.error}</p>
               )}
-              {(speech.error || transcriptionError) && (
-                <p className="mt-2 text-xs text-danger">{speech.error ?? transcriptionError}</p>
-              )}
-              {!browserSpeech.supported && geminiSpeech.supported && (
-                <p className="mt-2 text-xs text-muted">
-                  This browser does not support streaming speech recognition. Short microphone clips
-                  are sent to Gemini and finalized when the audio is processed.
-                </p>
-              )}
+              <p className="mt-1.5 text-xs text-muted">
+                {media.serverSttActive
+                  ? "Independent server-side transcription is capturing each participant's audio stream directly."
+                  : "Cross-browser continuous audio transcription is active for your microphone whenever unmuted."}
+              </p>
 
               <ol
                 ref={transcriptRef}
@@ -1392,6 +1295,14 @@ export default function RoomClient({
                         <span className="ml-2 inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-accent">
                           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
                           Live
+                        </span>
+                      )}
+                      {typeof entry.confidence === "number" && (
+                        <span
+                          className="ml-2 rounded bg-panel-2 px-1 py-0.5 font-mono text-[10px] text-muted"
+                          title="Speech-to-text confidence"
+                        >
+                          {Math.round(entry.confidence * 100)}%
                         </span>
                       )}
                       <span className="ml-2 text-xs text-muted">

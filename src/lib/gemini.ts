@@ -168,6 +168,60 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
   return callGeminiWithConfiguredKey(options);
 }
 
+export type DetailedAudioTranscription = {
+  text: string;
+  confidence: number | null;
+};
+
+/**
+ * Transcribes one short participant audio chunk through Gemini, optionally
+ * returning a model-estimated clarity/confidence score in [0, 1].
+ */
+export async function transcribeAudioDetailedWithGemini(input: {
+  audioBase64: string;
+  mimeType: string;
+  language?: string;
+}): Promise<DetailedAudioTranscription> {
+  if (!env.geminiKey) {
+    throw new AiUnavailableError("Gemini transcription requires GEMINI_API_KEY.");
+  }
+
+  const languageInstruction = input.language
+    ? `The expected spoken language is ${input.language}.`
+    : "Preserve the spoken language; do not translate.";
+
+  const raw = await callGeminiWithConfiguredKey({
+    prompt: [
+      "Transcribe the speech in the attached audio verbatim with proper capitalization and punctuation.",
+      languageInstruction,
+      "Do not summarize, add speaker labels, or describe background sounds.",
+      'If there is no intelligible speech, return JSON {"text":"","confidence":0}.',
+      'Otherwise return JSON {"text":"<verbatim transcript>","confidence":<number between 0.0 and 1.0 reflecting audio clarity>}.',
+    ].join(" "),
+    audio: { mimeType: input.mimeType, data: input.audioBase64 },
+    tier: "fast",
+    json: true,
+    temperature: 0,
+    maxOutputTokens: 1024,
+    timeoutMs: 30_000,
+  });
+
+  try {
+    const parsed = parseJsonReply<{ text?: unknown; confidence?: unknown }>(raw);
+    const text = String(parsed.text ?? "").trim();
+    if (!text || text === "[NO_SPEECH]") return { text: "", confidence: null };
+    const rawConf = Number(parsed.confidence);
+    const confidence =
+      Number.isFinite(rawConf) && rawConf >= 0 && rawConf <= 1
+        ? Math.round(rawConf * 100) / 100
+        : null;
+    return { text, confidence };
+  } catch {
+    const fallback = raw.trim();
+    return fallback === "[NO_SPEECH]" ? { text: "", confidence: null } : { text: fallback, confidence: null };
+  }
+}
+
 /**
  * Transcribes one short participant audio chunk through Gemini.
  * The API key remains on the server; audio is sent as inline data.
