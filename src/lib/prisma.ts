@@ -448,9 +448,28 @@ export function createInMemoryPrisma(): PrismaClient {
   return proxy as PrismaClient;
 }
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const globalForPrisma = globalThis as unknown as {
+  prisma?: PrismaClient;
+  schemaSyncedKeys?: Set<string>;
+  schemaSyncInFlight?: Map<string, Promise<void>>;
+};
 
-function isUnreachableDbError(err: unknown): boolean {
+const SCHEMA_SYNC_STATEMENTS: readonly string[] = [
+  `ALTER TABLE "Discussion"
+    ADD COLUMN IF NOT EXISTS "aiSpeakingUntil" TIMESTAMP(3),
+    ADD COLUMN IF NOT EXISTS "activeSpeakerId" TEXT,
+    ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3),
+    ADD COLUMN IF NOT EXISTS "welcomePosted" BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS "summaryPosted" BOOLEAN NOT NULL DEFAULT false`,
+  `ALTER TABLE "DiscussionParticipant"
+    ADD COLUMN IF NOT EXISTS "micLocked" BOOLEAN NOT NULL DEFAULT false`,
+  `ALTER TABLE "TranscriptSegment"
+    ADD COLUMN IF NOT EXISTS "confidence" DOUBLE PRECISION`,
+  `CREATE INDEX IF NOT EXISTS "TranscriptSegment_discussionId_status_startedAt_idx"
+    ON "TranscriptSegment"("discussionId", "status", "startedAt")`,
+];
+
+export function isUnreachableDbError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const code = (err as { code?: string }).code;
   const name = (err as { name?: string }).name ?? "";
@@ -461,6 +480,194 @@ function isUnreachableDbError(err: unknown): boolean {
     name === "PrismaClientInitializationError" ||
     /Can't reach database server|ECONNREFUSED|connect ECONNREFUSED/i.test(msg)
   );
+}
+
+export function isMissingColumnError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  const msg = (err as { message?: string }).message ?? "";
+  return (
+    code === "P2022" ||
+    code === "42703" ||
+    /column .* does not exist/i.test(msg)
+  );
+}
+
+function isMissingRelationError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  const msg = (err as { message?: string }).message ?? "";
+  const metaCode = (err as { meta?: { code?: string } }).meta?.code;
+  return (
+    code === "P2021" ||
+    code === "42P01" ||
+    metaCode === "42P01" ||
+    /relation ".*" does not exist/i.test(msg)
+  );
+}
+
+export async function ensurePostgresSchema(
+  client: Pick<PrismaClient, "$executeRawUnsafe">,
+  dbKey: string,
+  force = false,
+): Promise<void> {
+  if (!dbKey || dbKey.includes("build:build@localhost")) {
+    return;
+  }
+  const syncedKeys = (globalForPrisma.schemaSyncedKeys ??= new Set<string>());
+  const inFlight = (globalForPrisma.schemaSyncInFlight ??= new Map<string, Promise<void>>());
+
+  if (force) {
+    syncedKeys.delete(dbKey);
+  }
+  if (syncedKeys.has(dbKey)) {
+    return;
+  }
+
+  let running = inFlight.get(dbKey);
+  if (!running) {
+    running = (async () => {
+      try {
+        for (const sql of SCHEMA_SYNC_STATEMENTS) {
+          await client.$executeRawUnsafe(sql);
+        }
+        syncedKeys.add(dbKey);
+      } catch (err) {
+        if (isMissingRelationError(err)) {
+          console.warn(
+            "[quorum] Base tables do not exist yet — run `npx prisma db push` against DATABASE_URL",
+          );
+          syncedKeys.add(dbKey);
+          return;
+        }
+        throw err;
+      } finally {
+        inFlight.delete(dbKey);
+      }
+    })();
+    inFlight.set(dbKey, running);
+  }
+
+  await running;
+}
+
+export interface WrapPrismaOptions {
+  dbKey: string;
+  allowPreviewFallback: boolean;
+  createFallback?: () => PrismaClient;
+}
+
+export function wrapPrismaClient(
+  realClient: PrismaClient,
+  options: WrapPrismaOptions,
+): PrismaClient {
+  const { dbKey, allowPreviewFallback } = options;
+  const makeFallback = options.createFallback ?? createInMemoryPrisma;
+
+  let fallbackClient: PrismaClient | null = null;
+  const activateFallback = (): PrismaClient => {
+    if (!fallbackClient) {
+      console.warn(
+        "[AI Studio] Local PostgreSQL unreachable — switching to in-memory preview fallback",
+      );
+      fallbackClient = makeFallback();
+    }
+    return fallbackClient;
+  };
+
+  const ensureReady = async (force = false): Promise<PrismaClient | null> => {
+    if (fallbackClient) return fallbackClient;
+    const syncedKeys = globalForPrisma.schemaSyncedKeys;
+    if (!force && syncedKeys?.has(dbKey)) {
+      return null;
+    }
+    try {
+      await ensurePostgresSchema(realClient, dbKey, force);
+      return null;
+    } catch (err) {
+      if (allowPreviewFallback && isUnreachableDbError(err)) {
+        return activateFallback();
+      }
+      throw err;
+    }
+  };
+
+  return new Proxy(realClient, {
+    get(target, prop: string | symbol) {
+      if (typeof prop === "symbol" || prop === "then") {
+        return Reflect.get(target, prop);
+      }
+      if (
+        prop === "$queryRaw" ||
+        prop === "$executeRaw" ||
+        prop === "$queryRawUnsafe" ||
+        prop === "$executeRawUnsafe"
+      ) {
+        const active = fallbackClient ?? target;
+        const fn = Reflect.get(active, prop) as (...a: unknown[]) => Promise<unknown>;
+        return typeof fn === "function" ? fn.bind(active) : fn;
+      }
+      if (prop === "$transaction") {
+        return async (arg: unknown) => {
+          const fbOnInit = await ensureReady(false);
+          if (fbOnInit) {
+            return (fbOnInit.$transaction as (a: unknown) => Promise<unknown>)(arg);
+          }
+          try {
+            return await (target.$transaction as (a: unknown) => Promise<unknown>)(arg);
+          } catch (err) {
+            if (isMissingColumnError(err)) {
+              await ensureReady(true);
+              return await (target.$transaction as (a: unknown) => Promise<unknown>)(arg);
+            }
+            if (allowPreviewFallback && isUnreachableDbError(err)) {
+              const fb = activateFallback();
+              return (fb.$transaction as (a: unknown) => Promise<unknown>)(arg);
+            }
+            throw err;
+          }
+        };
+      }
+
+      const rawMember = Reflect.get(target, prop);
+      if (rawMember && typeof rawMember === "object") {
+        return new Proxy(rawMember, {
+          get(modelTarget, op: string | symbol) {
+            return async (...args: unknown[]) => {
+              const fbOnInit = await ensureReady(false);
+              if (fbOnInit) {
+                const fbModel = Reflect.get(fbOnInit, prop) as Record<
+                  string | symbol,
+                  (...a: unknown[]) => Promise<unknown>
+                >;
+                return fbModel[op](...args);
+              }
+              const fn = Reflect.get(modelTarget, op) as (...a: unknown[]) => Promise<unknown>;
+              try {
+                return await fn.apply(modelTarget, args);
+              } catch (err) {
+                if (isMissingColumnError(err)) {
+                  await ensureReady(true);
+                  return await fn.apply(modelTarget, args);
+                }
+                if (allowPreviewFallback && isUnreachableDbError(err)) {
+                  const fb = activateFallback();
+                  const fbModel = Reflect.get(fb, prop) as Record<
+                    string | symbol,
+                    (...a: unknown[]) => Promise<unknown>
+                  >;
+                  return fbModel[op](...args);
+                }
+                throw err;
+              }
+            };
+          },
+        });
+      }
+
+      return typeof rawMember === "function" ? rawMember.bind(target) : rawMember;
+    },
+  });
 }
 
 function initPrisma(): PrismaClient {
@@ -478,77 +685,14 @@ function initPrisma(): PrismaClient {
     return createInMemoryPrisma();
   }
 
-  const allowPreviewFallback = /(127\.0\.0\.1|localhost)/.test(url);
-  if (!allowPreviewFallback || process.env.NODE_ENV === "test") {
+  if (process.env.NODE_ENV === "test") {
     return realClient;
   }
 
-  let fallbackClient: PrismaClient | null = null;
-  const activateFallback = (): PrismaClient => {
-    if (!fallbackClient) {
-      console.warn(
-        "[AI Studio] Local PostgreSQL unreachable — switching to in-memory preview fallback",
-      );
-      fallbackClient = createInMemoryPrisma();
-    }
-    return fallbackClient;
-  };
-
-  return new Proxy(realClient, {
-    get(target, prop: string | symbol) {
-      if (prop === "$queryRaw" || prop === "$executeRaw") {
-        const active = fallbackClient ?? target;
-        return (...args: unknown[]) => {
-          const fn = Reflect.get(active, prop) as (...a: unknown[]) => Promise<unknown>;
-          return fn.apply(active, args);
-        };
-      }
-      if (prop === "$transaction") {
-        return async (arg: unknown) => {
-          if (fallbackClient) {
-            return (fallbackClient.$transaction as (a: unknown) => Promise<unknown>)(arg);
-          }
-          try {
-            return await (target.$transaction as (a: unknown) => Promise<unknown>)(arg);
-          } catch (err) {
-            if (!isUnreachableDbError(err)) throw err;
-            const fb = activateFallback();
-            return (fb.$transaction as (a: unknown) => Promise<unknown>)(arg);
-          }
-        };
-      }
-
-      const rawMember = Reflect.get(target, prop);
-      if (rawMember && typeof rawMember === "object") {
-        return new Proxy(rawMember, {
-          get(modelTarget, op: string | symbol) {
-            return async (...args: unknown[]) => {
-              if (fallbackClient) {
-                const fbModel = Reflect.get(fallbackClient, prop) as Record<
-                  string | symbol,
-                  (...a: unknown[]) => Promise<unknown>
-                >;
-                return fbModel[op](...args);
-              }
-              try {
-                const fn = Reflect.get(modelTarget, op) as (...a: unknown[]) => Promise<unknown>;
-                return await fn.apply(modelTarget, args);
-              } catch (err) {
-                if (!isUnreachableDbError(err)) throw err;
-                const fb = activateFallback();
-                const fbModel = Reflect.get(fb, prop) as Record<
-                  string | symbol,
-                  (...a: unknown[]) => Promise<unknown>
-                >;
-                return fbModel[op](...args);
-              }
-            };
-          },
-        });
-      }
-
-      return rawMember;
-    },
+  const allowPreviewFallback = /(127\.0\.0\.1|localhost)/.test(url);
+  return wrapPrismaClient(realClient, {
+    dbKey: url,
+    allowPreviewFallback,
   });
 }
 

@@ -62,5 +62,6 @@ USER nextjs
 EXPOSE 4000
 
 # PaaS platforms (Render, Railway, Fly) inject PORT and route traffic to it.
-# `exec` keeps next as PID 1 so SIGTERM reaches it for graceful shutdown.
-CMD ["sh", "-c", "exec node_modules/.bin/next start -p \"${PORT:-4000}\" -H 0.0.0.0"]
+# Sync schema changes idempotently before booting Next.js; `exec` keeps next
+# as PID 1 so SIGTERM reaches it for graceful shutdown.
+CMD ["sh", "-c", "node_modules/.bin/prisma db push --skip-generate || echo '[quorum] prisma db push skipped or deferred to runtime sync'; exec node_modules/.bin/next start -p \"${PORT:-4000}\" -H 0.0.0.0"]
