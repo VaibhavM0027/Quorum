@@ -175,21 +175,41 @@ export function useAssistantVoice({
       };
 
       let started = false;
+      let finished = false;
       const watchdog = setTimeout(() => {
         if (started || synth.speaking || synth.pending) return;
         release();
       }, 4000);
+
+      // Failsafe for browsers (notably Chrome) that occasionally drop `onend`
+      // on longer utterances — ensures microphones are never left locked.
+      const finishWatchdog = setTimeout(() => {
+        if (finished) return;
+        finished = true;
+        try {
+          synth.cancel();
+        } catch {
+          /* ignore */
+        }
+        step();
+      }, estimatedMs + 3500);
 
       utterance.onstart = () => {
         started = true;
         clearTimeout(watchdog);
       };
       utterance.onend = () => {
+        if (finished) return;
+        finished = true;
         clearTimeout(watchdog);
+        clearTimeout(finishWatchdog);
         step();
       };
       utterance.onerror = (event) => {
+        if (finished) return;
+        finished = true;
         clearTimeout(watchdog);
+        clearTimeout(finishWatchdog);
         if (event.error === "not-allowed") {
           release();
           return;

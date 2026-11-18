@@ -29,10 +29,15 @@ export default function MediaTrack({
     }
 
     element.srcObject = new MediaStream([track]);
-    const playPromise = element.play();
-    if (playPromise) playPromise.catch(() => undefined);
+    const play = () => {
+      const playPromise = element.play();
+      if (playPromise) playPromise.catch(() => undefined);
+    };
+    play();
+    track.addEventListener("unmute", play);
 
     return () => {
+      track.removeEventListener("unmute", play);
       element.srcObject = null;
     };
   }, [track]);
@@ -41,12 +46,14 @@ export default function MediaTrack({
     return <audio ref={ref as React.RefObject<HTMLAudioElement>} autoPlay playsInline />;
   }
 
+  // Video elements are always muted so browsers never block remote video autoplay;
+  // remote audio is rendered separately via dedicated <audio> elements.
   return (
     <video
       ref={ref as React.RefObject<HTMLVideoElement>}
       autoPlay
       playsInline
-      muted={muted}
+      muted={kind === "video" ? true : muted}
       className={className}
     />
   );

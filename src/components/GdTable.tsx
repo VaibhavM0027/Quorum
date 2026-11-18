@@ -72,11 +72,22 @@ export default function GdTable({
   const aiThinking = normalizedState === "AI_THINKING";
 
   const seatedParticipants = participants
-    .filter((person) => !person.removed && !person.leftAt && person.joinedAt && !person.isHost)
+    .filter(
+      (person) =>
+        !person.removed &&
+        !person.leftAt &&
+        (person.joinedAt || mediaByUser.has(person.userId)) &&
+        !person.isHost,
+    )
     .sort((a, b) => (a.seatNumber ?? Number.MAX_SAFE_INTEGER) - (b.seatNumber ?? Number.MAX_SAFE_INTEGER));
   const host =
-    participants.find((person) => person.isHost && !person.removed && !person.leftAt && person.joinedAt) ??
-    null;
+    participants.find(
+      (person) =>
+        person.isHost &&
+        !person.removed &&
+        !person.leftAt &&
+        (person.joinedAt || mediaByUser.has(person.userId)),
+    ) ?? null;
   const seatCount = seatedParticipants.length;
   const tableOccupancy = seatCount + Number(Boolean(host));
   const tileWidth = tileWidthPercent(tableOccupancy);

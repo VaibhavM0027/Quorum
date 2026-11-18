@@ -156,6 +156,19 @@ export function useLivekitRoom(
     }
   }, [options.initialMicEnabled, options.initialCamEnabled, status]);
 
+function canPublishMicFromPermissions(
+  permissions: Participant["permissions"] | undefined,
+): boolean {
+  if (!permissions) return true;
+  if (!permissions.canPublish) return false;
+  const sources = permissions.canPublishSources;
+  if (Array.isArray(sources) && sources.length > 0) {
+    // TrackSource.MICROPHONE === 2 in LiveKit protocol
+    return sources.includes(2);
+  }
+  return true;
+}
+
   const sync = useCallback(() => {
     const room = roomRef.current;
     if (!room) {
@@ -170,7 +183,7 @@ export function useLivekitRoom(
     setMicEnabled(room.localParticipant.isMicrophoneEnabled);
     setCamEnabled(room.localParticipant.isCameraEnabled);
     if (room.localParticipant.permissions) {
-      setSfuCanPublish(Boolean(room.localParticipant.permissions.canPublish));
+      setSfuCanPublish(canPublishMicFromPermissions(room.localParticipant.permissions));
     }
   }, []);
 
@@ -224,7 +237,10 @@ export function useLivekitRoom(
         if (disposed) return;
 
         const room = new lk.Room({
-          adaptiveStream: true,
+          // adaptiveStream pauses remote video unless track.attach(videoEl) is used;
+          // MediaTrack renders via MediaStream, so keep adaptiveStream off so remote
+          // video frames always flow immediately.
+          adaptiveStream: false,
           dynacast: true,
           audioCaptureDefaults: {
             echoCancellation: true,
@@ -308,7 +324,7 @@ export function useLivekitRoom(
           .on(lk.RoomEvent.ActiveSpeakersChanged, onChange)
           .on(lk.RoomEvent.ParticipantPermissionsChanged, (_prev, participant) => {
             if (participant === room.localParticipant) {
-              const allowed = participant.permissions?.canPublish ?? true;
+              const allowed = canPublishMicFromPermissions(participant.permissions);
               setSfuCanPublish(allowed);
               if (!allowed && room.localParticipant.isMicrophoneEnabled) {
                 void releaseLocalMic(room);
@@ -398,6 +414,14 @@ export function useLivekitRoom(
           .on(lk.RoomEvent.Reconnecting, () => setStatus("reconnecting"))
           .on(lk.RoomEvent.Reconnected, () => {
             setStatus("connected");
+            if (camWantedRef.current && !room.localParticipant.isCameraEnabled) {
+              void room.localParticipant
+                .setCameraEnabled(
+                  true,
+                  videoDeviceIdRef.current ? { deviceId: videoDeviceIdRef.current } : undefined,
+                )
+                .catch(() => {});
+            }
             sync();
           })
           .on(lk.RoomEvent.Disconnected, () => {
@@ -421,7 +445,8 @@ export function useLivekitRoom(
         setNeedsAudioUnblock(!room.canPlaybackAudio);
 
         const canPublishNow =
-          data.canPublish !== false && (room.localParticipant.permissions?.canPublish ?? true);
+          data.canPublish !== false &&
+          canPublishMicFromPermissions(room.localParticipant.permissions);
         setSfuCanPublish(canPublishNow);
 
         if (micWantedRef.current && canPublishNow) {

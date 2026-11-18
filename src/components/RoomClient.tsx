@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -33,6 +34,15 @@ import {
 import MediaTrack from "@/components/MediaTrack";
 import GdTable from "@/components/GdTable";
 import ThemeToggle from "@/components/ThemeToggle";
+
+const Table3D = dynamic(() => import("@/components/table3d/Table3D"), {
+  ssr: false,
+  loading: () => (
+    <div className="card flex aspect-[16/10] min-h-[360px] items-center justify-center text-sm text-muted">
+      Loading 3D table…
+    </div>
+  ),
+});
 import PreJoinLobby, { type PreJoinResult } from "@/components/PreJoinLobby";
 import BreakoutPanel, { type BreakoutCommand } from "@/components/BreakoutPanel";
 import LiveMonitorPanel, {
@@ -201,6 +211,27 @@ export default function RoomClient({
   const [now, setNow] = useState(() => Date.now());
   const [lobbyResult, setLobbyResult] = useState<PreJoinResult | null>(null);
   const [roomState, setRoomState] = useState<RoomStateBroadcast | null>(null);
+  const [tableLayout, setTableLayout] = useState<"round" | "table3d">("round");
+  const [webglFallback, setWebglFallback] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("quorum-layout");
+      if (saved === "table3d" || saved === "round") setTableLayout(saved);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const selectTableLayout = useCallback((next: "round" | "table3d") => {
+    setTableLayout(next);
+    if (next === "round") setWebglFallback(false);
+    try {
+      window.localStorage.setItem("quorum-layout", next);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const isLive = discussion.status === "LIVE";
 
@@ -254,6 +285,25 @@ export default function RoomClient({
       if (!res.ok) return;
       const data = (await res.json()) as { discussion: RoomDiscussion };
       setDiscussion(data.discussion);
+      setRoomState((prev) => {
+        if (!prev) return prev;
+        // If server poll says AI is no longer speaking and the broadcast is older
+        // than 2s, clear stale aiSpeaking so mics can never stay locked.
+        if (
+          prev.aiSpeaking &&
+          !data.discussion.aiSpeaking &&
+          Date.now() - new Date(prev.updatedAt).getTime() > 2000
+        ) {
+          return {
+            ...prev,
+            aiSpeaking: false,
+            aiSpeakingUntil: null,
+            paused: Boolean(data.discussion.paused),
+            conversationState: data.discussion.conversationState,
+          };
+        }
+        return prev;
+      });
     } catch {
       /* transient network errors are ignored; the next poll retries */
     }
@@ -367,11 +417,18 @@ export default function RoomClient({
   );
   transcriptDraftHandlerRef.current = acceptRealtimeDraft;
 
-  // Synchronized lock state: host lock, AI moderator speaking, meeting paused, or SFU revocation.
+  // Synchronized lock state: host lock, AI moderator speaking, or meeting paused.
+  // Never OR a stale roomState.aiSpeaking with a fresh server poll, and never
+  // deadlock the mic button on a stale sfuCanPublish (clicking unmute verifies
+  // authoritatively with POST /api/discussions/[id]/mic and restores SFU grants).
   const myLocked = Boolean(myMembership && !myMembership.removed && myMembership.micLocked);
   const roomPaused = roomState?.paused ?? discussion.paused ?? false;
-  const roomAiLocked = Boolean(roomState?.aiSpeaking) || Boolean(discussion.aiSpeaking);
-  const micHardLocked = myLocked || roomAiLocked || roomPaused || !media.sfuCanPublish;
+  const roomStateFresh =
+    roomState !== null && now - new Date(roomState.updatedAt).getTime() < 8000;
+  const roomAiLocked = roomStateFresh
+    ? Boolean(roomState.aiSpeaking)
+    : Boolean(discussion.aiSpeaking);
+  const micHardLocked = myLocked || roomAiLocked || roomPaused;
 
   // Transcription follows the active microphone and consent: never captures
   // while muted, paused, or while the AI moderator is speaking.
@@ -1117,18 +1174,50 @@ export default function RoomClient({
         <section className="flex flex-col gap-4">
           {isLive ? (
             <>
-              <GdTable
-                participants={discussion.participants}
-                tiles={media.tiles}
-                selfUserId={user.id}
-                aiEnabled={discussion.aiEnabled}
-                aiSpeaking={effectiveAiSpeaking}
-                conversationState={conversationState}
-                activeSpeakerId={activeSpeakerId}
-                turnQueue={turnQueue}
-                paused={roomPaused}
-                invitedParticipantId={invitedParticipantId}
-              />
+              <div className="flex items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  aria-pressed={tableLayout === "round"}
+                  onClick={() => selectTableLayout("round")}
+                  className={tableLayout === "round" ? "btn-primary py-1 text-xs" : "btn-ghost py-1 text-xs"}
+                >
+                  Round table
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={tableLayout === "table3d"}
+                  onClick={() => selectTableLayout("table3d")}
+                  className={tableLayout === "table3d" ? "btn-primary py-1 text-xs" : "btn-ghost py-1 text-xs"}
+                >
+                  3D table
+                </button>
+              </div>
+              {tableLayout === "table3d" && !webglFallback ? (
+                <Table3D
+                  participants={discussion.participants}
+                  tiles={media.tiles}
+                  selfUserId={user.id}
+                  aiEnabled={discussion.aiEnabled}
+                  aiSpeaking={effectiveAiSpeaking}
+                  activeSpeakerId={activeSpeakerId}
+                  invitedParticipantId={invitedParticipantId}
+                  paused={roomPaused}
+                  onWebGLFallback={() => setWebglFallback(true)}
+                />
+              ) : (
+                <GdTable
+                  participants={discussion.participants}
+                  tiles={media.tiles}
+                  selfUserId={user.id}
+                  aiEnabled={discussion.aiEnabled}
+                  aiSpeaking={effectiveAiSpeaking}
+                  conversationState={conversationState}
+                  activeSpeakerId={activeSpeakerId}
+                  turnQueue={turnQueue}
+                  paused={roomPaused}
+                  invitedParticipantId={invitedParticipantId}
+                />
+              )}
               {media.status !== "connected" && (
                 <div className="card flex min-h-[90px] flex-col items-center justify-center gap-2 text-sm text-muted">
                   {media.status === "error" ? (

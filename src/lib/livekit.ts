@@ -1,5 +1,16 @@
-import { AccessToken, DataPacket_Kind, RoomServiceClient, TrackType } from "livekit-server-sdk";
+import { AccessToken, DataPacket_Kind, RoomServiceClient, TrackSource, TrackType } from "livekit-server-sdk";
 import { env } from "./env";
+
+const MIC_UNLOCKED_SOURCES = [
+  TrackSource.CAMERA,
+  TrackSource.MICROPHONE,
+  TrackSource.SCREEN_SHARE,
+];
+
+const MIC_LOCKED_SOURCES = [
+  TrackSource.CAMERA,
+  TrackSource.SCREEN_SHARE,
+];
 
 /**
  * Server-side LiveKit helpers and authoritative participant permission control.
@@ -86,7 +97,12 @@ export async function createRoomToken(options: TokenOptions): Promise<string> {
   token.addGrant({
     room: roomNameFor(options.discussionId, options.breakoutRoom),
     roomJoin: true,
-    canPublish: options.hidden ? false : (options.canPublish ?? true),
+    canPublish: !options.hidden,
+    canPublishSources: options.hidden
+      ? []
+      : options.canPublish === false
+        ? MIC_LOCKED_SOURCES
+        : MIC_UNLOCKED_SOURCES,
     canSubscribe: true,
     canPublishData: !options.hidden,
     hidden: Boolean(options.hidden),
@@ -161,7 +177,8 @@ export async function enforceParticipantMicPermission(params: {
 
       try {
         await client.updateParticipant(room, params.identity, undefined, {
-          canPublish: params.canPublish,
+          canPublish: true,
+          canPublishSources: params.canPublish ? MIC_UNLOCKED_SOURCES : MIC_LOCKED_SOURCES,
           canSubscribe: true,
           canPublishData: true,
         });
@@ -228,7 +245,8 @@ export async function syncAllRoomMicPermissions(params: {
         const canPublish = !params.aiSpeaking && !params.meetingPaused && !p.micLocked;
         try {
           await client.updateParticipant(room, p.userId, undefined, {
-            canPublish,
+            canPublish: true,
+            canPublishSources: canPublish ? MIC_UNLOCKED_SOURCES : MIC_LOCKED_SOURCES,
             canSubscribe: true,
             canPublishData: true,
           });
