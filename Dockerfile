@@ -10,8 +10,8 @@
 
 FROM node:22-alpine AS deps
 WORKDIR /app
-# Prisma needs OpenSSL at install and run time.
-RUN apk add --no-cache openssl
+# Prisma needs OpenSSL and native Next/LiveKit bindings need libc6-compat on Alpine.
+RUN apk add --no-cache openssl libc6-compat
 COPY package.json package-lock.json ./
 # The `postinstall` hook runs `prisma generate`, which fails unless the schema is
 # already present. Copy it before installing so `npm ci` can complete.
@@ -20,7 +20,7 @@ RUN npm ci
 
 FROM node:22-alpine AS builder
 WORKDIR /app
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl libc6-compat
 # Optional: the LiveKit origin is compiled into the Content-Security-Policy here,
 # so passing these as build args yields the tightest connect-src. They are
 # usually only available at run time, in which case next.config.mjs relaxes the
@@ -36,11 +36,11 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
     JWT_SECRET="build-time-placeholder-secret-value-32-chars" \
     LIVEKIT_URL=${LIVEKIT_URL} \
     LIVEKIT_HOST=${LIVEKIT_HOST}
-RUN npx prisma generate && npm run build
+RUN npx prisma generate && npx next build --webpack
 
 FROM node:22-alpine AS runner
 WORKDIR /app
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl libc6-compat
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 
