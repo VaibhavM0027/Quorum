@@ -863,10 +863,27 @@ export default function RoomClient({
 
   // Authoritative microphone lock: whenever the host locks this mic, the AI
   // moderator starts speaking, or the meeting pauses, release local capture immediately.
+  //
+  // FIX: `media.micEnabled` is intentionally excluded from the dependency array.
+  // The old code had it in deps, which caused the effect to fire every time the
+  // user toggled the mic ON (micEnabled: false → true), and if `micHardLocked`
+  // was still stale-true (AI-speaking window < 8 s), the mic was immediately
+  // force-muted again — making it impossible to unmute.
+  // Now the effect only runs when the lock state itself transitions, so the user
+  // can unmute normally once the server confirms the action via POST /mic.
   const setMic = media.setMic;
+  const prevMicHardLockedRef = useRef(micHardLocked);
   useEffect(() => {
-    if (micHardLocked && media.micEnabled) void setMic(false);
-  }, [micHardLocked, media.micEnabled, setMic]);
+    const prevLocked = prevMicHardLockedRef.current;
+    prevMicHardLockedRef.current = micHardLocked;
+
+    // Force-mute only on lock transitions (unlocked → locked), so we don't
+    // repeatedly stomp on the user's own unmute attempts while locked state
+    // is stale (< 8 s old roomState broadcast).
+    if (micHardLocked && !prevLocked && media.micEnabled) {
+      void setMic(false);
+    }
+  }, [micHardLocked, setMic]); // intentionally omit `media.micEnabled` – we act on lock transitions only
 
   const removed = Boolean(myMembership?.removed);
   const disconnect = media.disconnect;
@@ -942,6 +959,48 @@ export default function RoomClient({
     [discussion.id, loadAiEvents, refresh],
   );
 
+  // ---- Auto-end: enforce the host-configured meeting duration ----------------
+  // Only the host's browser fires the end action so it runs exactly once.
+  // The timer is reset whenever the discussion is paused (paused time does not
+  // count toward the duration) and cancelled if the host ends the meeting first.
+  const autoEndFiredRef = useRef(false);
+  useEffect(() => {
+    if (!discussion.isHost) return;
+    if (!isLive) return;
+    if (!discussion.startedAt) return;
+    if (discussion.durationMin <= 0) return;
+    if (roomPaused) return;
+
+    const startMs = new Date(discussion.startedAt).getTime();
+    const limitMs = discussion.durationMin * 60 * 1000;
+    const remaining = limitMs - (Date.now() - startMs);
+
+    if (remaining <= 0) {
+      // Already over-time — end immediately (guard against double-fire).
+      if (!autoEndFiredRef.current) {
+        autoEndFiredRef.current = true;
+        void control("end");
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (!autoEndFiredRef.current) {
+        autoEndFiredRef.current = true;
+        void control("end");
+      }
+    }, remaining);
+
+    return () => clearTimeout(timer);
+  }, [
+    discussion.isHost,
+    isLive,
+    discussion.startedAt,
+    discussion.durationMin,
+    roomPaused,
+    control,
+  ]);
+
   const leave = useCallback(async () => {
     // Leaving on purpose gives the seat up. A dropped connection never reaches
     // this line, which is what keeps a returning student in the same chair.
@@ -975,6 +1034,13 @@ export default function RoomClient({
     const seconds = Math.max(0, Math.floor((end - new Date(discussion.startedAt).getTime()) / 1000));
     return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   }, [discussion.startedAt, discussion.endedAt, now]);
+
+  /** Seconds remaining before the meeting auto-ends; null when not applicable. */
+  const timeRemainingSec = useMemo(() => {
+    if (!isLive || !discussion.startedAt || discussion.durationMin <= 0) return null;
+    const elapsedSec = Math.floor((now - new Date(discussion.startedAt).getTime()) / 1000);
+    return Math.max(0, discussion.durationMin * 60 - elapsedSec);
+  }, [isLive, discussion.startedAt, discussion.durationMin, now]);
 
   const remoteWithAudio = media.tiles.filter((tile) => !tile.isLocal && tile.audioTrack);
 
@@ -1026,8 +1092,16 @@ export default function RoomClient({
           </span>
         )}
         {elapsed && (
-          <span className="pill">
+          <span
+            className={`pill${timeRemainingSec !== null && timeRemainingSec <= 120 ? " border-warn/50 text-warn" : ""}`}
+            title={timeRemainingSec !== null ? `${discussion.durationMin} min limit — ${Math.floor(timeRemainingSec / 60)}m ${timeRemainingSec % 60}s remaining` : undefined}
+          >
             <Clock className="h-3.5 w-3.5" /> {elapsed}
+            {timeRemainingSec !== null && (
+              <span className="ml-1 opacity-70">
+                / {String(Math.floor(discussion.durationMin * 60 / 60)).padStart(2, "0")}:00
+              </span>
+            )}
           </span>
         )}
         {isLive && discussion.aiEnabled && (
@@ -1123,6 +1197,26 @@ export default function RoomClient({
       {myLocked && !removed && !effectiveAiSpeaking && !roomPaused && (
         <p className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm text-warn">
           <MicOff className="h-4 w-4" /> Your microphone was locked by the host.
+        </p>
+      )}
+
+      {/* ---- Meeting-time warning banners ----------------------------------- */}
+      {isLive && timeRemainingSec !== null && timeRemainingSec <= 60 && timeRemainingSec > 0 && (
+        <p className="flex items-center gap-2 border-b border-danger/50 bg-danger/10 px-5 py-2 text-sm font-semibold text-danger">
+          <Clock className="h-4 w-4 shrink-0 animate-pulse" />
+          Less than 1 minute remaining — the discussion will end automatically.
+          <span className="ml-auto font-mono tabular-nums">
+            {String(Math.floor(timeRemainingSec / 60)).padStart(2, "0")}:{String(timeRemainingSec % 60).padStart(2, "0")}
+          </span>
+        </p>
+      )}
+      {isLive && timeRemainingSec !== null && timeRemainingSec > 60 && timeRemainingSec <= 120 && (
+        <p className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-5 py-2 text-sm text-warn">
+          <Clock className="h-4 w-4 shrink-0" />
+          2 minutes remaining — the discussion will end automatically when the time is up.
+          <span className="ml-auto font-mono tabular-nums">
+            {String(Math.floor(timeRemainingSec / 60)).padStart(2, "0")}:{String(timeRemainingSec % 60).padStart(2, "0")}
+          </span>
         </p>
       )}
 
