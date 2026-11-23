@@ -1,3 +1,4 @@
+import { TurnRequestSource, TurnRequestStatus, TurnState } from "@prisma/client";
 import { prisma } from "./prisma";
 import { env } from "./env";
 import { AiRequestError, callGemini, geminiAvailable, parseJsonReply } from "./gemini";
@@ -25,6 +26,13 @@ import {
   type ParticipationRow,
   type ParticipationSnapshot,
 } from "./participation";
+import {
+  createAiSpeechEvent,
+  expireTurnIfNeeded,
+  grantParticipantTx,
+  nextRequestedParticipant,
+  syncRoomPermissions,
+} from "./turns";
 
 /**
  * The AI moderator.
@@ -537,6 +545,7 @@ async function runAssistantTickInternal(discussionId: string): Promise<Assistant
 
   await expireStaleAiSpeakingLock(discussionId);
 
+  await expireTurnIfNeeded(discussionId);
   const discussion = await prisma.discussion.findUnique({
     where: { id: discussionId },
     select: {
@@ -551,9 +560,13 @@ async function runAssistantTickInternal(discussionId: string): Promise<Assistant
       inviteResponseSec: true,
       conversationState: true,
       lastAiSpokeAt: true,
+<<<<<<< HEAD
       aiSpeakingUntil: true,
       pausedAt: true,
       welcomePosted: true,
+=======
+      turnState: true,
+>>>>>>> a42fb56 (Mic fixes with ui changes)
       startedAt: true,
       participants: {
         select: {
@@ -582,6 +595,9 @@ async function runAssistantTickInternal(discussionId: string): Promise<Assistant
   if (!discussion) return { ...result, skipped: "not-found" };
   if (discussion.status !== "LIVE") return { ...result, skipped: "not-live" };
   if (!discussion.aiEnabled) return { ...result, skipped: "ai-disabled" };
+  if (discussion.turnState === TurnState.AI_SPEAKING) {
+    return { ...result, conversationState: "AI_SPEAKING" };
+  }
 
   if (isMeetingPaused(discussion)) {
     await persistConversationState(discussionId, "MEETING_PAUSED", discussion.conversationState);
@@ -799,9 +815,15 @@ async function runAssistantTickInternal(discussionId: string): Promise<Assistant
     });
     if (await abortIfInterrupted()) return result;
     if (message) {
-      await prisma.aiEvent.create({
-        data: { discussionId, kind: "RELEVANCE", message, source: "gemini" },
-      });
+      await prisma.$transaction((tx) =>
+        createAiSpeechEvent(tx, {
+          discussionId,
+          kind: "RELEVANCE",
+          message,
+          source: "gemini",
+        }),
+      );
+      await syncRoomPermissions(discussionId);
       result.eventsCreated.push({ kind: "RELEVANCE", message });
       await beginAiSpeaking(discussionId, estimateAiSpeechDurationMs(message));
       result.conversationState = "AI_SPEAKING";
@@ -1013,16 +1035,17 @@ async function resolveInvitations(params: {
         pickedName: participantName,
       });
       if (message) {
-        await prisma.aiEvent.create({
-          data: {
+        await prisma.$transaction((tx) =>
+          createAiSpeechEvent(tx, {
             discussionId,
             participantId: invitation.participantId,
             kind: "NUDGE",
             message,
             source: "gemini",
             dueAt: nextBy,
-          },
-        });
+          }),
+        );
+        await syncRoomPermissions(discussionId);
         result.eventsCreated.push({ kind: "NUDGE", message, participantName });
         await beginAiSpeaking(discussionId, estimateAiSpeechDurationMs(message));
       }
@@ -1031,13 +1054,54 @@ async function resolveInvitations(params: {
 
     // Asked twice and still nothing. This is the only outcome that costs a
     // participant anything, and it is deliberately small.
-    await prisma.$transaction([
-      prisma.invitation.update({ where: { id: invitation.id }, data: { status: "UNANSWERED" } }),
-      prisma.discussionParticipant.update({
+    await prisma.$transaction(async (tx) => {
+      await tx.invitation.update({
+        where: { id: invitation.id },
+        data: { status: "UNANSWERED" },
+      });
+      await tx.discussionParticipant.update({
         where: { id: invitation.participantId },
         data: { unansweredInviteCount: { increment: 1 } },
-      }),
-    ]);
+      });
+      await tx.turnRequest.updateMany({
+        where: {
+          discussionId,
+          participantId: invitation.participantId,
+          status: { in: [TurnRequestStatus.REQUESTED, TurnRequestStatus.GRANTED] },
+        },
+        data: { status: TurnRequestStatus.CANCELLED, finishedAt: new Date(now) },
+      });
+      const current = await tx.discussion.findUnique({
+        where: { id: discussionId },
+        select: {
+          activeTurnParticipantId: true,
+          turnState: true,
+          turnDurationSec: true,
+        },
+      });
+      if (current?.activeTurnParticipantId === invitation.participantId) {
+        await tx.discussion.update({
+          where: { id: discussionId },
+          data: {
+            turnState: TurnState.OPEN,
+            activeTurnParticipantId: null,
+            turnStartedAt: null,
+            turnEndsAt: null,
+          },
+        });
+        const next = await nextRequestedParticipant(tx, discussionId);
+        if (next) {
+          await grantParticipantTx(tx, {
+            discussionId,
+            participantId: next.id,
+            source: TurnRequestSource.PARTICIPANT,
+            now: new Date(now),
+            turnDurationSec: current.turnDurationSec,
+          });
+        }
+      }
+    });
+    await syncRoomPermissions(discussionId);
   }
 }
 
@@ -1055,10 +1119,10 @@ export async function applyInvitationOutcome(params: {
   const at = new Date(now);
   const status = kind === "pass" ? "PASSED" : kind === "technical" ? "TECHNICAL" : "ANSWERED";
 
-  return prisma.$transaction(async (tx) => {
+  const applied = await prisma.$transaction(async (tx) => {
     const invitation = await tx.invitation.findUnique({
       where: { id: invitationId },
-      select: { status: true, aiEventId: true },
+      select: { status: true, aiEventId: true, discussionId: true },
     });
     if (!invitation || invitation.status !== "PENDING") return false;
 
@@ -1081,8 +1145,55 @@ export async function applyInvitationOutcome(params: {
             : { audioIssueAt: at },
     });
 
+    if (kind === "pass" || kind === "technical") {
+      await tx.turnRequest.updateMany({
+        where: {
+          discussionId: invitation.discussionId,
+          participantId,
+          status: { in: [TurnRequestStatus.REQUESTED, TurnRequestStatus.GRANTED] },
+        },
+        data: {
+          status: kind === "pass" ? TurnRequestStatus.PASSED : TurnRequestStatus.CANCELLED,
+          finishedAt: at,
+        },
+      });
+      const current = await tx.discussion.findUnique({
+        where: { id: invitation.discussionId },
+        select: { id: true, turnState: true, activeTurnParticipantId: true, turnDurationSec: true },
+      });
+      if (current?.activeTurnParticipantId === participantId) {
+        await tx.discussion.update({
+          where: { id: current.id },
+          data: {
+            turnState: TurnState.OPEN,
+            activeTurnParticipantId: null,
+            turnStartedAt: null,
+            turnEndsAt: null,
+          },
+        });
+        const next = await nextRequestedParticipant(tx, current.id);
+        if (next) {
+          await grantParticipantTx(tx, {
+            discussionId: current.id,
+            participantId: next.id,
+            source: TurnRequestSource.PARTICIPANT,
+            now: at,
+            turnDurationSec: current.turnDurationSec,
+          });
+        }
+      }
+    }
+
     return true;
   });
+  if (applied && kind !== "answered") {
+    const invitation = await prisma.invitation.findUnique({
+      where: { id: invitationId },
+      select: { discussionId: true },
+    });
+    if (invitation) await syncRoomPermissions(invitation.discussionId);
+  }
+  return applied;
 }
 
 /** Offers the floor to one participant and opens the record of that offer. */
@@ -1147,15 +1258,13 @@ async function recordCustomInvitation(params: {
     });
     if (existing) return false;
 
-    const event = await tx.aiEvent.create({
-      data: {
+    const event = await createAiSpeechEvent(tx, {
         discussionId,
         participantId: candidate.participantId,
         kind: "NUDGE",
         message,
         source: "gemini",
         dueAt: respondByAt,
-      },
     });
     await tx.invitation.create({
       data: {
@@ -1165,6 +1274,23 @@ async function recordCustomInvitation(params: {
         respondByAt,
       },
     });
+    const pendingRequest = await tx.turnRequest.findFirst({
+      where: {
+        discussionId,
+        participantId: candidate.participantId,
+        status: TurnRequestStatus.REQUESTED,
+      },
+      select: { id: true },
+    });
+    if (!pendingRequest) {
+      await tx.turnRequest.create({
+        data: {
+          discussionId,
+          participantId: candidate.participantId,
+          source: TurnRequestSource.AI,
+        },
+      });
+    }
     await tx.discussionParticipant.update({
       where: { id: candidate.participantId },
       data: { invitedCount: { increment: 1 }, lastInvitedAt: new Date(now) },
@@ -1173,6 +1299,7 @@ async function recordCustomInvitation(params: {
   });
 
   if (created) {
+    await syncRoomPermissions(discussionId);
     result.eventsCreated.push({ kind: "NUDGE", message, participantName: candidate.displayName });
     await beginAiSpeaking(discussionId, estimateAiSpeechDurationMs(message));
   }

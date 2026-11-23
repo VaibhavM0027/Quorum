@@ -337,6 +337,7 @@ function CreateDiscussionForm({
     mode: "AI_MODERATED" as "AI_MODERATED" | "FREE_FLOW",
     silencePromptSec: 6,
     inviteResponseSec: 12,
+    turnDurationSec: 120,
   });
 
   function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
@@ -507,6 +508,24 @@ function CreateDiscussionForm({
           <p className="mt-1 text-xs text-muted">
             How long an invited participant has to reply before the AI checks in, and then records
             the invitation as unanswered.
+          </p>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="turnDurationSec">
+            Maximum speaking turn (seconds)
+          </label>
+          <input
+            id="turnDurationSec"
+            type="number"
+            className="field"
+            min={30}
+            max={300}
+            value={form.turnDurationSec}
+            onChange={(e) => update("turnDurationSec", Number(e.target.value))}
+          />
+          <p className="mt-1 text-xs text-muted">
+            A turn ends automatically at this limit. Speakers can finish or pass sooner.
           </p>
         </div>
       </div>

@@ -15,9 +15,9 @@ reports.
 | Accounts | Email + password sign-up and sign-in. Host and Participant roles. Signed, httpOnly session cookies (JWT, HS256). |
 | Hosting a GD | Create a discussion (title, topic, context, rules, duration, mode), get a human-friendly join code and an invite link. Start, end, cancel or reopen the room. |
 | Joining | Participants join with a code or invite link, give transcription consent, and are admitted until the room is full. |
-| Live media | Real audio/video via LiveKit (SFU). Hosts can lock a participant's mic or remove them mid-session. |
+| Live media | Real audio/video via LiveKit (SFU). The server grants microphone publishing only to the active speaker; all participants are muted during AI speech and between turns. Hosts can grant turns, lock a participant's mic or remove them mid-session. |
 | Transcription | Each participant's browser transcribes their own microphone with streaming interim results where available. One live utterance is updated as results arrive and finalized after a natural pause; drafts are shared over LiveKit and the same stream record becomes final. Unsupported or unavailable browser recognition falls back to silence-delimited Gemini audio. |
-| AI assistant | A live relevance score per contribution, plus AI-generated silence prompts, quiet-participant nudges and off-topic reminders. Every assistant message is stored and auditable — nothing is faked. |
+| AI assistant | AI-generated welcome prompts, quiet-participant invitations and off-topic reminders. The exact stored prompt is spoken with browser text-to-speech; playback receipts keep the floor closed until clients finish or the server timeout expires. |
 | Evaluation | Host-triggered evaluation scores six weighted rubric dimensions per participant, grounded in the transcript. The overall score is always computed server-side. |
 | Reports | In-app report page plus downloadable PDFs: an individual report per participant and one whole-room (overall) report. |
 
@@ -49,10 +49,20 @@ Key design decisions:
   identity), then LiveKit notifies active room clients to reload it. Periodic
   polling recovers updates missed during a disconnect or reconnect, and queued
   submissions retry after temporary network or LiveKit reconnects.
+- **Speaking turns are server-authoritative.** Requests, the FIFO queue, active
+  speaker and turn deadlines are stored in PostgreSQL. LiveKit publish
+  permissions are updated on the server when AI speech starts or ends, a turn
+  is granted or finished, or a host locks a microphone. The browser also mutes
+  locally when it is not the active speaker, but this is not the security
+  boundary.
+- **AI speech uses browser text-to-speech.** Clients report when playback ends;
+  unsupported or stalled playback is marked failed/skipped and a bounded server
+  deadline prevents the room from remaining muted indefinitely. This is not a
+  single broadcast audio stream, so devices may render the voice differently.
 - **Interim speech is room-wide.** Supported browsers publish the current
   sentence hypothesis over LiveKit immediately; the backend periodically saves
   the current draft with its participant and stream identity. This bridges partials across
-  breakout rooms. A final result updates that same stream record, and partials
+  room reconnects. A final result updates that same stream record, and partials
   are excluded from scoring and exports.
 - **Audio fallback remains server-side.** Browsers without streaming speech
   recognition, or with an unavailable speech service/language pack, buffer
@@ -184,18 +194,23 @@ configured.
 ## 6. Using Quorum
 
 1. **Host:** sign in, create a discussion, and share the invite link or join code.
-2. **Participants:** open the link (or `/join`), enter the code, grant
-   microphone/camera and transcription consent.
+2. **Participants:** open the link (or `/join`), enter the code, then use the
+   pre-meeting device check to preview the camera, verify the microphone level,
+   select audio devices and choose whether to enter with the camera on. The
+   microphone always starts muted. The check uses local live preview/monitoring
+   only; it does not record or retain the check media. Camera access is optional.
 3. **Host:** start the discussion. Talk normally; the AI assistant observes.
 4. **Evaluation:** the host runs the evaluation from the report page (or it can
    run once the discussion is live/finished).
 
-For a multi-device transcription check, join with a host and at least two
-participants on separate devices using a modern browser. Each participant should
-consent and enable their microphone; speak in turn and briefly overlap. Confirm
-that each line is labelled with the correct participant and appears on the other
-devices, then disconnect and reconnect one participant and confirm new lines
-continue to appear. The same stored transcript feeds individual AI evaluations.
+For a multi-device discussion check, join with a host and at least two
+participants on separate devices using a modern browser. Start the session and
+confirm every participant stays muted while the AI moderator speaks and after
+it finishes. Request a turn, verify only the granted participant can unmute,
+then finish or pass and confirm the next queued turn is granted. Confirm live
+transcripts are attributed to the right participant, then disconnect and
+reconnect one participant and verify the server restores the correct mute/turn
+state. The same stored transcript feeds individual AI evaluations.
 5. **Reports:** open `/reports/<discussionId>` and download the overall PDF or a
    per-participant PDF.
 

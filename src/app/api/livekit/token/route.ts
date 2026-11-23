@@ -9,6 +9,7 @@ import {
   isRoomSttActive,
 } from "@/lib/room-sync";
 import { fail, handleRouteError, ok } from "@/lib/http";
+import { canPublishDuringTurn } from "@/lib/turns";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +17,11 @@ export const dynamic = "force-dynamic";
 /**
  * Issues a LiveKit join token for the signed-in participant of a discussion.
  * The token is scoped to that single room and expires after 4 hours.
+<<<<<<< HEAD
+=======
+ *
+ * Participants connect to the discussion's main room.
+>>>>>>> a42fb56 (Mic fixes with ui changes)
  */
 export async function GET(request: Request) {
   try {
@@ -44,7 +50,9 @@ export async function GET(request: Request) {
     const me = discussion.participants.find((p) => p.userId === user.id);
     if (!me) return fail("Join the discussion before connecting to the room.", 403);
     if (me.removed) return fail("You were removed from this discussion.", 403);
+    if (me.leftAt) return fail("You have left this discussion.", 403);
 
+<<<<<<< HEAD
     const breakoutRoom = isHost || !discussion.breakoutEnabled ? null : (me.breakoutRoom ?? null);
 
     const requested = new URL(request.url).searchParams.get("room");
@@ -64,25 +72,43 @@ export async function GET(request: Request) {
       void ensureRoomSttWorker(discussion.id, breakoutRoom);
     }
 
+=======
+    const canPublish = canPublishDuringTurn({
+      state: discussion.turnState,
+      activeParticipantId: discussion.activeTurnParticipantId,
+      participantId: me.id,
+      micLocked: me.micLocked,
+      removed: me.removed,
+      leftAt: me.leftAt,
+    });
+>>>>>>> a42fb56 (Mic fixes with ui changes)
     const token = await createRoomToken({
       discussionId: discussion.id,
       identity: user.id,
       name: me.displayName,
       isHost,
       canPublish,
+<<<<<<< HEAD
       breakoutRoom,
+=======
+      breakoutRoom: null,
+>>>>>>> a42fb56 (Mic fixes with ui changes)
     });
 
     return ok({
       token,
       url: browserLivekitUrl(),
-      roomName: roomNameFor(discussion.id, breakoutRoom),
+      roomName: roomNameFor(discussion.id, null),
       identity: user.id,
       canPublish,
+<<<<<<< HEAD
       aiSpeaking: aiLocked,
       paused,
       breakoutRoom,
       serverSttActive: isRoomSttActive(discussion.id),
+=======
+      breakoutRoom: null,
+>>>>>>> a42fb56 (Mic fixes with ui changes)
     });
   } catch (error) {
     return handleRouteError(error);

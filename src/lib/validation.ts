@@ -55,6 +55,8 @@ export const createDiscussionSchema = z.object({
   silencePromptSec: z.coerce.number().int().min(4).max(300).default(6),
   /** How long an invited participant has to respond before the moderator checks in. */
   inviteResponseSec: z.coerce.number().int().min(5).max(60).default(12),
+  /** Maximum time a participant may hold one granted turn. */
+  turnDurationSec: z.coerce.number().int().min(30).max(300).default(120),
 });
 
 export const updateDiscussionSchema = z.object({
@@ -139,6 +141,19 @@ export const presenceSchema = z.object({
 
 export const participantControlSchema = z.object({
   action: z.enum(["lock-mic", "unlock-mic", "remove", "restore"]),
+});
+
+export const turnActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("request"), requestId: z.string().uuid() }),
+  z.object({ action: z.literal("cancel-request") }),
+  z.object({ action: z.literal("finish") }),
+  z.object({ action: z.literal("pass") }),
+  z.object({ action: z.literal("grant"), participantId: z.string().min(1).optional() }),
+]);
+
+export const aiSpeechReceiptSchema = z.object({
+  eventId: z.string().min(1).max(80),
+  status: z.enum(["COMPLETED", "FAILED", "SKIPPED"]),
 });
 
 // ---------------------------------------------------------------------------

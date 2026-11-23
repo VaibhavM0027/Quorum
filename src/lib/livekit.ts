@@ -61,10 +61,35 @@ export function browserLivekitUrl(): string {
   return env.livekitHost.replace(/^http/, "ws");
 }
 
+<<<<<<< HEAD
 /** URL the Node.js server uses to connect to LiveKit over WebSocket (for STT worker). */
 export function serverLivekitWsUrl(): string {
   if (env.livekitUrl) return env.livekitUrl;
   return env.livekitHost.replace(/^http/, "ws");
+=======
+/**
+ * URL used by server-side LiveKit APIs. Localhost is the example default, so
+ * when a cloud browser URL is configured without changing that default, point
+ * the server SDK at the matching HTTPS endpoint instead.
+ */
+export function livekitServerUrl(): string {
+  return resolveLivekitServerUrl(env.livekitHost, env.livekitUrl);
+}
+
+export function resolveLivekitServerUrl(configuredHost: string, browserUrl: string): string {
+  if (!browserUrl) return configuredHost;
+
+  const hostIsLoopback = /^(https?:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/i.test(
+    configuredHost,
+  );
+  const browserUrlIsRemote = !/^(wss?:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/i.test(
+    browserUrl,
+  );
+  if (hostIsLoopback && browserUrlIsRemote) {
+    return browserUrl.replace(/^wss:/i, "https:").replace(/^ws:/i, "http:");
+  }
+  return configuredHost;
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 }
 
 export type TokenOptions = {

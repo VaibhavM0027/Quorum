@@ -2,8 +2,13 @@ import { notFound, redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { loadDiscussionForUser } from "@/lib/discussions";
 import { env } from "@/lib/env";
+<<<<<<< HEAD
 import { isAiSpeakingLocked, isMeetingPaused, isRoomSttActive } from "@/lib/room-sync";
 import RoomClient, { type RoomDiscussion } from "@/components/RoomClient";
+=======
+import RoomEntryClient from "@/components/RoomEntryClient";
+import type { RoomDiscussion } from "@/components/RoomClient";
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
 export const dynamic = "force-dynamic";
 
@@ -33,13 +38,17 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
     transcriptionEnabled: discussion.transcriptionEnabled,
     silencePromptSec: discussion.silencePromptSec,
     inviteResponseSec: discussion.inviteResponseSec,
+    turnDurationSec: discussion.turnDurationSec,
     conversationState: discussion.conversationState,
+<<<<<<< HEAD
     aiSpeaking: isAiSpeakingLocked(discussion),
     paused: isMeetingPaused(discussion),
     activeSpeakerId: discussion.activeSpeakerId,
     serverSttActive: isRoomSttActive(discussion.id),
     breakoutEnabled: discussion.breakoutEnabled,
     breakoutGroupSize: discussion.breakoutGroupSize,
+=======
+>>>>>>> a42fb56 (Mic fixes with ui changes)
     scheduledAt: discussion.scheduledAt.toISOString(),
     startedAt: discussion.startedAt?.toISOString() ?? null,
     endedAt: discussion.endedAt?.toISOString() ?? null,
@@ -56,9 +65,8 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
       micLocked: p.micLocked,
       transcriptionConsent: p.transcriptionConsent,
       seatNumber: p.seatNumber,
-      breakoutRoom: p.breakoutRoom,
     })),
   };
 
-  return <RoomClient user={user} discussion={payload} participantId={me?.id ?? null} />;
+  return <RoomEntryClient user={user} discussion={payload} participantId={me?.id ?? null} />;
 }

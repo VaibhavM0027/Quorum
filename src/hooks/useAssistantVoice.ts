@@ -63,19 +63,18 @@ function browserHasUserActivation(): boolean {
 export type AssistantVoice = {
   /** The browser exposes speech synthesis at all. */
   supported: boolean;
-  /** Automatic speaking is switched on (the participant can mute it). */
-  enabled: boolean;
   /** The browser will actually play audio; false only before the first gesture. */
   unlocked: boolean;
   /** A sentence is playing right now. */
   speaking: boolean;
   /** The sentence that is playing, for highlighting it in the transcript card. */
   spokenText: string | null;
-  /** The installed voice in use, for display. */
-  voiceName: string | null;
-  setEnabled: (value: boolean) => void;
   /** Speaks a sentence as soon as the room is quiet. Safe to call repeatedly. */
-  announce: (text: string) => void;
+  announce: (
+    text: string,
+    eventId: string,
+    onFinished: (status: "COMPLETED" | "FAILED") => void,
+  ) => boolean;
   /** Cancels anything playing and clears anything queued. */
   stop: () => void;
   /** Callable from a click handler to satisfy the browser's autoplay policy. */
@@ -99,13 +98,10 @@ export function useAssistantVoice({
 } = {}): AssistantVoice {
   // Detected in an effect so the first client render matches the server HTML.
   const [supported, setSupported] = useState(false);
-  const [enabled, setEnabledState] = useState(true);
   const [unlocked, setUnlockedState] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [spokenText, setSpokenText] = useState<string | null>(null);
-  const [voiceName, setVoiceName] = useState<string | null>(null);
 
-  const enabledRef = useRef(enabled);
   const unlockedRef = useRef(false);
   const holdRef = useRef(hold);
   const speakingRef = useRef(false);
@@ -113,7 +109,12 @@ export function useAssistantVoice({
   const onSpeakingChangeRef = useRef(onSpeakingChange);
   onSpeakingChangeRef.current = onSpeakingChange;
   /** Sentences waiting for the room to fall quiet again. */
-  const queueRef = useRef<{ text: string; queuedAt: number }[]>([]);
+  const queueRef = useRef<{
+    text: string;
+    eventId: string;
+    queuedAt: number;
+    onFinished: (status: "COMPLETED" | "FAILED") => void;
+  }[]>([]);
   /** The last sentence actually spoken, so nothing is ever said twice. */
   const lastSpokenRef = useRef<string | null>(null);
   /** Lets the mount effect drain the queue without depending on `drain`. */
@@ -139,13 +140,18 @@ export function useAssistantVoice({
       }
 
       // Wait for a gap: never talk over a participant, and stay muted on request.
+<<<<<<< HEAD
       if (!enabledRef.current || !unlockedRef.current || holdRef.current) {
         if (wasSpeaking) onSpeakingChangeRef.current?.(false);
         return;
       }
+=======
+      if (!unlockedRef.current || holdRef.current) return;
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
       let item = queueRef.current.shift();
       while (item && Date.now() - item.queuedAt > maxDeferMs) {
+        item.onFinished("FAILED");
         item = queueRef.current.shift();
       }
       if (!item) {
@@ -165,13 +171,16 @@ export function useAssistantVoice({
       const estimatedMs = Math.max(3000, Math.min(25_000, words * 400 + 1800));
 
       const release = () => {
-        queueRef.current.unshift(pending);
         unlockedRef.current = false;
         setUnlockedState(false);
         speakingRef.current = false;
         setSpeaking(false);
         setSpokenText(null);
+<<<<<<< HEAD
         onSpeakingChangeRef.current?.(false);
+=======
+        pending.onFinished("FAILED");
+>>>>>>> a42fb56 (Mic fixes with ui changes)
       };
 
       let started = false;
@@ -202,7 +211,11 @@ export function useAssistantVoice({
         if (finished) return;
         finished = true;
         clearTimeout(watchdog);
+<<<<<<< HEAD
         clearTimeout(finishWatchdog);
+=======
+        pending.onFinished("COMPLETED");
+>>>>>>> a42fb56 (Mic fixes with ui changes)
         step();
       };
       utterance.onerror = (event) => {
@@ -211,9 +224,14 @@ export function useAssistantVoice({
         clearTimeout(watchdog);
         clearTimeout(finishWatchdog);
         if (event.error === "not-allowed") {
+<<<<<<< HEAD
+=======
+          // Do not play a delayed AI sentence over a participant who took the floor.
+>>>>>>> a42fb56 (Mic fixes with ui changes)
           release();
           return;
         }
+        pending.onFinished("FAILED");
         step();
       };
 
@@ -232,13 +250,30 @@ export function useAssistantVoice({
   drainRef.current = drain;
 
   const announce = useCallback(
-    (text: string) => {
+    (
+      text: string,
+      eventId: string,
+      onFinished: (status: "COMPLETED" | "FAILED") => void,
+    ) => {
       const message = text.trim();
+<<<<<<< HEAD
       if (!supported || !message) return;
       if (message === lastSpokenRef.current) return;
       if (queueRef.current.some((item) => item.text === message)) return;
       queueRef.current.push({ text: message, queuedAt: Date.now() });
+=======
+      if (!supported || !message) return false;
+      // The assistant must never repeat itself.
+      if (
+        message === lastSpokenRef.current ||
+        queueRef.current.some((item) => item.eventId === eventId)
+      ) {
+        return false;
+      }
+      queueRef.current.push({ text: message, eventId, queuedAt: Date.now(), onFinished });
+>>>>>>> a42fb56 (Mic fixes with ui changes)
       drain();
+      return true;
     },
     [supported, drain],
   );
@@ -254,16 +289,6 @@ export function useAssistantVoice({
     setSpokenText(null);
     if (wasSpeaking) onSpeakingChangeRef.current?.(false);
   }, []);
-
-  const setEnabled = useCallback(
-    (value: boolean) => {
-      enabledRef.current = value;
-      setEnabledState(value);
-      if (value) drain();
-      else stop();
-    },
-    [drain, stop],
-  );
 
   const unlock = useCallback(() => {
     unlockedRef.current = true;
@@ -287,9 +312,7 @@ export function useAssistantVoice({
     if (!supported) return;
     const synth = window.speechSynthesis;
     const select = () => {
-      const voice = pickVoice(synth.getVoices(), lang);
-      voiceRef.current = voice;
-      setVoiceName(voice?.name ?? null);
+      voiceRef.current = pickVoice(synth.getVoices(), lang);
     };
     select();
     synth.addEventListener("voiceschanged", select);
@@ -321,12 +344,9 @@ export function useAssistantVoice({
 
   return {
     supported,
-    enabled,
     unlocked,
     speaking,
     spokenText,
-    voiceName,
-    setEnabled,
     announce,
     stop,
     unlock,

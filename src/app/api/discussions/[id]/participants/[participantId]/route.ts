@@ -5,6 +5,7 @@ import { fail, handleRouteError, ok, readJson } from "@/lib/http";
 import { enforceParticipantMicPermission } from "@/lib/livekit";
 import { isAiSpeakingLocked, isMeetingPaused, syncRoomStateSnapshot } from "@/lib/room-sync";
 import { participantControlSchema } from "@/lib/validation";
+import { finishParticipantTurn, syncRoomPermissions } from "@/lib/turns";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,6 +76,7 @@ export async function PATCH(request: Request, { params }: Params) {
       await assignBreakoutRooms(id);
     }
 
+<<<<<<< HEAD
     const roomBlocked =
       discussion.status !== "LIVE" || isAiSpeakingLocked(discussion) || isMeetingPaused(discussion);
     await enforceParticipantMicPermission({
@@ -86,6 +88,44 @@ export async function PATCH(request: Request, { params }: Params) {
     });
 
     await syncRoomStateSnapshot(id, { broadcast: true, syncMics: false });
+=======
+    if (action === "lock-mic" || action === "remove") {
+      const now = new Date();
+      await prisma.$transaction([
+        prisma.turnRequest.updateMany({
+          where: {
+            discussionId: id,
+            participantId,
+            status: { in: ["REQUESTED", "GRANTED"] },
+          },
+          data: { status: "CANCELLED", finishedAt: now },
+        }),
+        prisma.invitation.updateMany({
+          where: { discussionId: id, participantId, status: "PENDING" },
+          data: { status: "TECHNICAL", respondedAt: now },
+        }),
+      ]);
+    }
+
+    const currentDiscussion = await prisma.discussion.findUnique({
+      where: { id },
+      select: { turnState: true, activeTurnParticipantId: true },
+    });
+    if (
+      (action === "lock-mic" || action === "remove") &&
+      currentDiscussion?.turnState === "PARTICIPANT_SPEAKING" &&
+      currentDiscussion.activeTurnParticipantId === participantId
+    ) {
+      await finishParticipantTurn({
+        discussionId: id,
+        participantId,
+        actorIsHost: true,
+        action: "finish",
+      });
+    } else {
+      await syncRoomPermissions(id);
+    }
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
     return ok({ participant: updated });
   } catch (error) {

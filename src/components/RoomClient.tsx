@@ -19,7 +19,6 @@ import {
   Video,
   VideoOff,
   Volume2,
-  VolumeX,
   Radio,
   WifiOff,
   ScrollText,
@@ -27,6 +26,7 @@ import {
   ShieldAlert,
   Sparkles,
   Circle,
+<<<<<<< HEAD
   UsersRound,
   Pause,
   Lock,
@@ -45,11 +45,20 @@ const Table3D = dynamic(() => import("@/components/table3d/Table3D"), {
 });
 import PreJoinLobby, { type PreJoinResult } from "@/components/PreJoinLobby";
 import BreakoutPanel, { type BreakoutCommand } from "@/components/BreakoutPanel";
+=======
+} from "lucide-react";
+import MediaTrack from "@/components/MediaTrack";
+import GdTable from "@/components/GdTable";
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 import LiveMonitorPanel, {
   type LiveStat,
   type ParticipantAction,
 } from "@/components/LiveMonitorPanel";
-import { useLivekitRoom, type TranscriptDraftMessage } from "@/hooks/useLivekitRoom";
+import {
+  useLivekitRoom,
+  type LivekitDevicePreferences,
+  type TranscriptDraftMessage,
+} from "@/hooks/useLivekitRoom";
 import {
   useGeminiTranscription,
   type AudioPartialEvent,
@@ -74,8 +83,6 @@ export type RoomParticipant = {
   transcriptionConsent: boolean;
   /** Numbered seat at the discussion table; null for the host and freed seats. */
   seatNumber: number | null;
-  /** Breakout group this student is in; null while breakout rooms are off. */
-  breakoutRoom: number | null;
 };
 
 export type RoomDiscussion = {
@@ -94,14 +101,18 @@ export type RoomDiscussion = {
   silencePromptSec: number;
   /** How long an invited participant has to reply before the moderator checks in. */
   inviteResponseSec: number;
+  turnDurationSec: number;
   /** What the conversation-management engine believes the room is doing. */
   conversationState: string;
+<<<<<<< HEAD
   aiSpeaking?: boolean;
   paused?: boolean;
   activeSpeakerId?: string | null;
   serverSttActive?: boolean;
   breakoutEnabled: boolean;
   breakoutGroupSize: number;
+=======
+>>>>>>> a42fb56 (Mic fixes with ui changes)
   scheduledAt: string;
   startedAt: string | null;
   endedAt: string | null;
@@ -166,6 +177,31 @@ type ParticipationEntry = {
   score: number;
 };
 
+type TurnQueueEntry = {
+  id: string;
+  participantId: string;
+  name: string;
+  isSelf: boolean;
+  source: "PARTICIPANT" | "AI" | "HOST";
+  requestedAt: string;
+};
+
+type TurnSnapshot = {
+  state: "IDLE" | "AI_SPEAKING" | "OPEN" | "PARTICIPANT_SPEAKING";
+  activeParticipantId: string | null;
+  activeParticipantName: string | null;
+  turnStartedAt: string | null;
+  turnEndsAt: string | null;
+  aiSpeechEventId: string | null;
+  invitedParticipantId: string | null;
+  aiSpeechDeadlineAt: string | null;
+  queue: TurnQueueEntry[];
+  ownRequestId: string | null;
+  isActiveSpeaker: boolean;
+  isHost: boolean;
+  sessionLive: boolean;
+};
+
 const AI_KIND_LABEL: Record<string, string> = {
   WELCOME: "Welcome",
   QUESTION: "Question",
@@ -177,6 +213,7 @@ const AI_KIND_LABEL: Record<string, string> = {
 };
 
 /** Assistant messages that are read aloud as well as shown in the card. */
+<<<<<<< HEAD
 const SPOKEN_AI_KINDS = new Set([
   "WELCOME",
   "QUESTION",
@@ -185,6 +222,9 @@ const SPOKEN_AI_KINDS = new Set([
   "RELEVANCE",
   "FOLLOW_UP",
 ]);
+=======
+const SPOKEN_AI_KINDS = new Set(["WELCOME", "QUESTION", "NUDGE", "SILENCE", "RELEVANCE"]);
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
 /**
  * How long the room counts down for when the server did not stamp a usable
@@ -197,10 +237,12 @@ export default function RoomClient({
   user,
   discussion: initial,
   participantId,
+  devicePreferences,
 }: {
   user: RoomUser;
   discussion: RoomDiscussion;
   participantId: string | null;
+  devicePreferences: LivekitDevicePreferences;
 }) {
   const router = useRouter();
   const [discussion, setDiscussion] = useState(initial);
@@ -209,6 +251,7 @@ export default function RoomClient({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+<<<<<<< HEAD
   const [lobbyResult, setLobbyResult] = useState<PreJoinResult | null>(null);
   const [roomState, setRoomState] = useState<RoomStateBroadcast | null>(null);
   const [tableLayout, setTableLayout] = useState<"round" | "table3d">("round");
@@ -232,23 +275,26 @@ export default function RoomClient({
       /* ignore */
     }
   }, []);
+=======
+  const [turn, setTurn] = useState<TurnSnapshot | null>(null);
+  const [turnBusy, setTurnBusy] = useState(false);
+  const [turnError, setTurnError] = useState<string | null>(null);
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
   const isLive = discussion.status === "LIVE";
 
   const myMembership = discussion.participants.find((p) => p.userId === user.id) ?? null;
-  /**
-   * The breakout group this browser belongs in.
-   *
-   * The moderator stays in the main room, so the session recording keeps
-   * following them rather than one group, and the server refuses to hand anyone
-   * a token for a room they were not placed in.
-   */
-  const myBreakoutRoom =
-    discussion.breakoutEnabled && !discussion.isHost ? (myMembership?.breakoutRoom ?? null) : null;
+  const myLocked = Boolean(myMembership && !myMembership.removed && myMembership.micLocked);
+  const turnRef = useRef<TurnSnapshot | null>(null);
+  const requestIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    turnRef.current = turn;
+  }, [turn]);
   const transcriptRefreshRef = useRef<() => void>(() => {});
   const transcriptDraftHandlerRef = useRef<(message: TranscriptDraftMessage) => void>(() => {});
   const media = useLivekitRoom(
     discussion.id,
+<<<<<<< HEAD
     myBreakoutRoom,
     isLive && Boolean(participantId) && Boolean(lobbyResult),
     () => transcriptRefreshRef.current(),
@@ -260,6 +306,13 @@ export default function RoomClient({
       videoDeviceId: lobbyResult?.videoDeviceId,
       onRoomState: setRoomState,
     },
+=======
+    isLive && Boolean(participantId),
+    myLocked,
+    () => transcriptRefreshRef.current(),
+    (message) => transcriptDraftHandlerRef.current(message),
+    devicePreferences,
+>>>>>>> a42fb56 (Mic fixes with ui changes)
   );
   const localAudioTile = media.tiles.find((tile) => tile.isLocal);
   const localSpeaking = localAudioTile?.speaking ?? false;
@@ -309,11 +362,55 @@ export default function RoomClient({
     }
   }, [initial.id]);
 
+  const loadTurns = useCallback(async () => {
+    if (!isLive) return;
+    try {
+      const res = await fetch(`/api/discussions/${discussion.id}/turns`, { cache: "no-store" });
+      const data = (await res.json().catch(() => ({}))) as TurnSnapshot & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Could not load the speaking queue.");
+      setTurn(data);
+      setTurnError(null);
+    } catch (cause) {
+      setTurnError(cause instanceof Error ? cause.message : "Could not load the speaking queue.");
+    }
+  }, [discussion.id, isLive]);
+
+  const sendTurnAction = useCallback(
+    async (body: { action: string; participantId?: string; requestId?: string }) => {
+      setTurnBusy(true);
+      setTurnError(null);
+      try {
+        const res = await fetch(`/api/discussions/${discussion.id}/turns`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) throw new Error(data.error ?? "Could not update the speaking queue.");
+        await loadTurns();
+        return true;
+      } catch (cause) {
+        setTurnError(cause instanceof Error ? cause.message : "Could not update the speaking queue.");
+        return false;
+      } finally {
+        setTurnBusy(false);
+      }
+    },
+    [discussion.id, loadTurns],
+  );
+
   useEffect(() => {
     if (discussion.status === "COMPLETED" || discussion.status === "CANCELLED") return;
     const timer = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [discussion.status, refresh]);
+
+  useEffect(() => {
+    if (!isLive) return;
+    void loadTurns();
+    const timer = setInterval(() => void loadTurns(), 2000);
+    return () => clearInterval(timer);
+  }, [isLive, loadTurns]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -595,6 +692,23 @@ export default function RoomClient({
     announceRef.current = voice.announce;
   }, [voice.announce]);
 
+  const recordAiPlayback = useCallback(
+    async (eventId: string, status: "COMPLETED" | "FAILED" | "SKIPPED") => {
+      try {
+        const res = await fetch(`/api/discussions/${initial.id}/ai/speech`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ eventId, status }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) throw new Error(data.error ?? "Could not report AI speech completion.");
+      } catch (cause) {
+        setTurnError(cause instanceof Error ? cause.message : "Could not report AI speech completion.");
+      }
+    },
+    [initial.id],
+  );
+
   /** Ids already seen, so a message is spoken once and only once. */
   const seenAiEventIds = useRef(new Set<string>());
   /** The first payload is the backlog: shown, only reading brand-new welcomes (<12s). */
@@ -608,7 +722,7 @@ export default function RoomClient({
   const loadAiEvents = useCallback(async () => {
     try {
       const res = await fetch(`/api/discussions/${initial.id}/ai/events`, { cache: "no-store" });
-      if (!res.ok) return;
+      if (!res.ok) throw new Error("Could not load AI moderator messages.");
       const data = (await res.json()) as { events: AiEventEntry[] };
       setAiEvents(data.events);
 
@@ -631,7 +745,9 @@ export default function RoomClient({
       const fresh = data.events.filter((event) => !seenAiEventIds.current.has(event.id));
       for (const event of data.events) seenAiEventIds.current.add(event.id);
       if (!aiEventsPrimed.current) {
+        if (!turnRef.current) return;
         aiEventsPrimed.current = true;
+<<<<<<< HEAD
         // Speak a brand-new opening welcome if the host just started the meeting.
         for (const event of fresh) {
           if (
@@ -639,24 +755,47 @@ export default function RoomClient({
             Date.now() - new Date(event.createdAt).getTime() <= 12_000
           ) {
             announceRef.current(event.message);
+=======
+        const activeSpeech = data.events.find(
+          (event) => event.id === turnRef.current?.aiSpeechEventId,
+        );
+        if (activeSpeech && SPOKEN_AI_KINDS.has(activeSpeech.kind)) {
+          const queued = announceRef.current(activeSpeech.message, activeSpeech.id, (status) => {
+            void recordAiPlayback(activeSpeech.id, status);
+          });
+          if (!queued) {
+            void recordAiPlayback(activeSpeech.id, voice.supported ? "FAILED" : "SKIPPED");
+>>>>>>> a42fb56 (Mic fixes with ui changes)
           }
         }
         return;
       }
       for (const event of fresh) {
+<<<<<<< HEAD
         if (SPOKEN_AI_KINDS.has(event.kind)) announceRef.current(event.message);
+=======
+        if (!SPOKEN_AI_KINDS.has(event.kind)) continue;
+        const queued = announceRef.current(event.message, event.id, (status) => {
+          void recordAiPlayback(event.id, status);
+        });
+        if (!queued) {
+          void recordAiPlayback(event.id, voice.supported ? "FAILED" : "SKIPPED");
+        }
+>>>>>>> a42fb56 (Mic fixes with ui changes)
       }
-    } catch {
-      /* transient network errors are ignored; the next poll retries */
+    } catch (cause) {
+      setTurnError(cause instanceof Error ? cause.message : "Could not load AI moderator messages.");
     }
-  }, [initial.id]);
+  }, [initial.id, recordAiPlayback, voice.supported]);
 
   const runAiTick = useCallback(async () => {
     try {
-      await fetch(`/api/discussions/${initial.id}/ai/tick`, { method: "POST" });
+      const res = await fetch(`/api/discussions/${initial.id}/ai/tick`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "AI moderator service is unavailable.");
       await loadAiEvents();
-    } catch {
-      /* the assistant simply tries again on the next tick */
+    } catch (cause) {
+      setTurnError(cause instanceof Error ? cause.message : "AI moderator service is unavailable.");
     }
   }, [initial.id, loadAiEvents]);
 
@@ -836,30 +975,11 @@ export default function RoomClient({
     [discussion.id, refresh],
   );
 
-  // ---- Breakout rooms -------------------------------------------------------
-  const [breakoutBusy, setBreakoutBusy] = useState(false);
-
-  const breakoutControl = useCallback(
-    async (command: BreakoutCommand) => {
-      setBreakoutBusy(true);
-      setError(null);
-      try {
-        const res = await fetch(`/api/discussions/${discussion.id}/breakout`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(command),
-        });
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        if (!res.ok) throw new Error(data.error ?? "Could not update the breakout rooms");
-        await refresh();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not update the breakout rooms");
-      } finally {
-        setBreakoutBusy(false);
-      }
-    },
-    [discussion.id, refresh],
+  const removed = Boolean(myMembership?.removed);
+  const canSpeakNow = Boolean(
+    turn?.state === "PARTICIPANT_SPEAKING" && turn.isActiveSpeaker && !myLocked && !removed,
   );
+<<<<<<< HEAD
 
   // Authoritative microphone lock: whenever the host locks this mic, the AI
   // moderator starts speaking, or the meeting pauses, release local capture immediately.
@@ -871,9 +991,15 @@ export default function RoomClient({
   // force-muted again — making it impossible to unmute.
   // Now the effect only runs when the lock state itself transitions, so the user
   // can unmute normally once the server confirms the action via POST /mic.
+=======
+  const turnSecondsRemaining = turn?.turnEndsAt
+    ? Math.max(0, Math.ceil((Date.parse(turn.turnEndsAt) - now) / 1000))
+    : null;
+>>>>>>> a42fb56 (Mic fixes with ui changes)
   const setMic = media.setMic;
   const prevMicHardLockedRef = useRef(micHardLocked);
   useEffect(() => {
+<<<<<<< HEAD
     const prevLocked = prevMicHardLockedRef.current;
     prevMicHardLockedRef.current = micHardLocked;
 
@@ -884,8 +1010,11 @@ export default function RoomClient({
       void setMic(false);
     }
   }, [micHardLocked, setMic]); // intentionally omit `media.micEnabled` – we act on lock transitions only
+=======
+    if (!canSpeakNow && media.micEnabled) void setMic(false);
+  }, [canSpeakNow, media.micEnabled, setMic]);
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
-  const removed = Boolean(myMembership?.removed);
   const disconnect = media.disconnect;
   useEffect(() => {
     if (removed) void disconnect();
@@ -1220,6 +1349,142 @@ export default function RoomClient({
         </p>
       )}
 
+      {turnError && (
+        <p className="border-b border-danger/40 bg-danger/10 px-5 py-2 text-sm text-danger" role="alert">
+          Speaking queue: {turnError}
+        </p>
+      )}
+
+      {isLive && turn && (
+        <section
+          aria-live="polite"
+          className="border-b border-accent/30 bg-panel px-5 py-3"
+          aria-label="Speaking turns"
+        >
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-ink">
+                {turn.state === "AI_SPEAKING"
+                  ? "AI moderator is speaking — all microphones are muted."
+                  : turn.state === "PARTICIPANT_SPEAKING"
+                    ? `${turn.activeParticipantName ?? "A participant"} has the floor.`
+                    : turn.state === "OPEN"
+                      ? "The floor is open — microphones stay muted until a turn is granted."
+                      : "Waiting for the host to start the discussion."}
+              </p>
+              {turn.state === "PARTICIPANT_SPEAKING" && (
+                <p className="mt-1 text-xs text-muted">
+                  Only the active speaker can unmute. Turn limit: {discussion.turnDurationSec} seconds
+                  {turnSecondsRemaining !== null && `; ${turnSecondsRemaining} seconds remaining`}.
+                </p>
+              )}
+            </div>
+
+            {turn.isActiveSpeaker ? (
+              <>
+                <span className="pill border-accent/50 text-accent">Your turn</span>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => void sendTurnAction({ action: "finish" })}
+                  disabled={turnBusy}
+                >
+                  Finish turn
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => void sendTurnAction({ action: "pass" })}
+                  disabled={turnBusy}
+                >
+                  Pass
+                </button>
+              </>
+            ) : turn.invitedParticipantId === myMembership?.id && turn.state === "AI_SPEAKING" ? (
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => void sendTurnAction({ action: "pass" })}
+                disabled={turnBusy}
+              >
+                Pass invitation
+              </button>
+            ) : null}
+
+            {!turn.isActiveSpeaker && !myLocked && !removed && (
+              turn.ownRequestId ? (
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => void sendTurnAction({ action: "cancel-request" })}
+                  disabled={turnBusy}
+                >
+                  Cancel request
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={async () => {
+                    requestIdRef.current ??= crypto.randomUUID();
+                    const sent = await sendTurnAction({
+                      action: "request",
+                      requestId: requestIdRef.current,
+                    });
+                    if (sent) requestIdRef.current = null;
+                  }}
+                  disabled={turnBusy || turn.state === "IDLE"}
+                >
+                  {turnBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
+                  Request to speak
+                </button>
+              )
+            )}
+          </div>
+
+          {turn.queue.length > 0 && (
+            <div className="mx-auto mt-3 max-w-6xl border-t border-line pt-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                Speaking queue ({turn.queue.length})
+              </p>
+              <ol className="mt-2 flex flex-wrap gap-2">
+                {turn.queue.map((request, index) => (
+                  <li
+                    key={request.id}
+                    className="flex items-center gap-2 rounded-md border border-line bg-panel-2 px-2 py-1 text-sm"
+                  >
+                    <span className="text-muted">{index + 1}.</span>
+                    <span>{request.isSelf ? "You" : request.name}</span>
+                    {request.source === "AI" && <span className="pill">AI invite</span>}
+                    {turn.isHost && turn.state === "OPEN" && (
+                      <button
+                        type="button"
+                        className="text-accent underline"
+                        onClick={() => void sendTurnAction({ action: "grant", participantId: request.participantId })}
+                        disabled={turnBusy}
+                      >
+                        Grant
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {turn.isHost && turn.state === "PARTICIPANT_SPEAKING" && !turn.isActiveSpeaker && (
+            <button
+              type="button"
+              className="btn-ghost mt-3"
+              onClick={() => void sendTurnAction({ action: "finish" })}
+              disabled={turnBusy}
+            >
+              End {turn.activeParticipantName ?? "active"} turn
+            </button>
+          )}
+        </section>
+      )}
+
       {isLive && media.needsAudioUnblock && (
         <button
           type="button"
@@ -1268,6 +1533,7 @@ export default function RoomClient({
         <section className="flex flex-col gap-4">
           {isLive ? (
             <>
+<<<<<<< HEAD
               <div className="flex items-center justify-end gap-1.5">
                 <button
                   type="button"
@@ -1312,6 +1578,20 @@ export default function RoomClient({
                   invitedParticipantId={invitedParticipantId}
                 />
               )}
+=======
+              {/* Everyone is seated around the table at their own numbered seat,
+                  so the room reads as a real discussion rather than a grid. */}
+              <GdTable
+                participants={discussion.participants}
+                tiles={media.tiles}
+                maxSeats={discussion.maxParticipants}
+                selfUserId={user.id}
+                activeSpeakerId={turn?.activeParticipantId ?? null}
+                aiEnabled={discussion.aiEnabled}
+                aiSpeaking={turn?.state === "AI_SPEAKING"}
+                topic={discussion.topic}
+              />
+>>>>>>> a42fb56 (Mic fixes with ui changes)
               {media.status !== "connected" && (
                 <div className="card flex min-h-[90px] flex-col items-center justify-center gap-2 text-sm text-muted">
                   {media.status === "error" ? (
@@ -1337,6 +1617,7 @@ export default function RoomClient({
                 <button
                   type="button"
                   onClick={() => void media.toggleMic()}
+<<<<<<< HEAD
                   disabled={media.status !== "connected" || micHardLocked || removed}
                   className={
                     micHardLocked
@@ -1362,6 +1643,19 @@ export default function RoomClient({
                         : media.micEnabled
                           ? "Microphone on"
                           : "Microphone off"}
+=======
+                  disabled={media.status !== "connected" || !canSpeakNow}
+                  className={media.micEnabled ? "btn-primary" : "btn-ghost"}
+                >
+                  {media.micEnabled ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
+                  {myLocked
+                    ? "Microphone locked"
+                    : turn?.isActiveSpeaker
+                      ? media.micEnabled
+                        ? "Microphone on"
+                        : "Unmute for your turn"
+                      : "Microphone muted until your turn"}
+>>>>>>> a42fb56 (Mic fixes with ui changes)
                 </button>
                 <button
                   type="button"
@@ -1434,11 +1728,17 @@ export default function RoomClient({
                           ? "listening"
                           : "starting…"
                       : consented
+<<<<<<< HEAD
                         ? micHardLocked
                           ? "mic locked"
                           : media.micEnabled
                             ? "paused"
                             : "mic off"
+=======
+                        ? media.micEnabled
+                          ? "not transcribing"
+                          : "mic off"
+>>>>>>> a42fb56 (Mic fixes with ui changes)
                         : isLive
                           ? "consent needed"
                           : "offline"}
@@ -1529,52 +1829,17 @@ export default function RoomClient({
             />
           )}
 
-          {discussion.isHost && isLive && (
-            <BreakoutPanel
-              participants={discussion.participants}
-              enabled={discussion.breakoutEnabled}
-              groupSize={discussion.breakoutGroupSize}
-              busy={breakoutBusy}
-              onControl={(command) => void breakoutControl(command)}
-            />
-          )}
-
-          {/* Everyone else is told which group they are in; the host stays behind. */}
-          {isLive && !discussion.isHost && discussion.breakoutEnabled && myBreakoutRoom !== null && (
-            <div className="card">
-              <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
-                <UsersRound className="h-4 w-4" /> Breakout room
-              </h2>
-              <p className="mt-2 text-sm text-ink">
-                You are in room {myBreakoutRoom}. You can hear and speak with your group only.
-              </p>
-            </div>
-          )}
-
           {discussion.aiEnabled && (
             <div className="card">
               <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
                 <Sparkles className="h-4 w-4" /> AI assistant
                 {voice.supported ? (
-                  <button
-                    type="button"
-                    onClick={() => voice.setEnabled(!voice.enabled)}
-                    title={
-                      voice.enabled
-                        ? `Mute the assistant's voice${voice.voiceName ? ` (${voice.voiceName})` : ""}`
-                        : "Unmute the assistant's voice"
-                    }
-                    className="ml-auto flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs font-normal normal-case"
-                  >
-                    {voice.enabled ? (
-                      <Volume2 className={`h-3.5 w-3.5 ${voice.speaking ? "text-accent" : ""}`} />
-                    ) : (
-                      <VolumeX className="h-3.5 w-3.5 text-muted" />
-                    )}
+                  <span className="ml-auto flex items-center gap-1.5 text-xs font-normal normal-case">
+                    <Volume2 className={`h-3.5 w-3.5 ${voice.speaking ? "text-accent" : ""}`} />
                     <span className={voice.speaking ? "text-accent" : "text-muted"}>
-                      {voice.speaking ? "speaking…" : voice.enabled ? "voice on" : "voice off"}
+                      {voice.speaking ? "speaking…" : "voice ready"}
                     </span>
-                  </button>
+                  </span>
                 ) : (
                   <span className="ml-auto text-xs font-normal normal-case text-muted">
                     voice unavailable
@@ -1582,7 +1847,7 @@ export default function RoomClient({
                 )}
               </h2>
 
-              {voice.supported && voice.enabled && !voice.unlocked && (
+              {voice.supported && !voice.unlocked && (
                 <button
                   type="button"
                   onClick={voice.unlock}

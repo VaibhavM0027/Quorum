@@ -4,7 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Loader2, Radio, Users2, Clock } from "lucide-react";
+<<<<<<< HEAD
 import ThemeToggle from "@/components/ThemeToggle";
+=======
+import DeviceCheck, { type RoomDevicePreferences } from "@/components/DeviceCheck";
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
 type Preview = {
   id: string;
@@ -34,6 +38,7 @@ export default function JoinClient({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [checkingDevices, setCheckingDevices] = useState(false);
 
   const lookup = useCallback(
     async (value: string) => {
@@ -65,6 +70,12 @@ export default function JoinClient({
       router.push(`/login?next=${encodeURIComponent(`/join?code=${preview ? code : ""}`)}`);
       return;
     }
+    setError(null);
+    setCheckingDevices(true);
+  }
+
+  async function joinWithPreferences(preferences: RoomDevicePreferences) {
+    if (!preview) return;
     setBusy(true);
     setError(null);
     try {
@@ -75,11 +86,35 @@ export default function JoinClient({
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string; discussionId?: string };
       if (!res.ok) throw new Error(data.error ?? "Could not join that discussion");
+      try {
+        sessionStorage.setItem(`quorum-device-preferences:${data.discussionId}`, JSON.stringify(preferences));
+      } catch {
+        setError("Browser storage is unavailable; the room will ask you to confirm your devices again.");
+      }
       router.push(`/room/${data.discussionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not join that discussion");
+    } finally {
       setBusy(false);
     }
+  }
+
+  if (checkingDevices && preview) {
+    return (
+      <>
+        <DeviceCheck
+          title={preview.title}
+          topic={preview.topic}
+          joining={busy}
+          onContinue={(preferences) => void joinWithPreferences(preferences)}
+        />
+        {error && (
+          <p className="fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-xl rounded-lg border border-danger/40 bg-panel px-4 py-3 text-sm text-danger shadow-xl" role="alert">
+            {error}
+          </p>
+        )}
+      </>
+    );
   }
 
   return (

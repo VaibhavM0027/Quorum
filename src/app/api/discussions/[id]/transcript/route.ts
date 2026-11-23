@@ -21,7 +21,7 @@ import { classifyParticipantResponse } from "@/lib/participation";
 import { transcriptLog, transcriptWarn } from "@/lib/debug-log";
 import { DataPacket_Kind, RoomServiceClient } from "livekit-server-sdk";
 import { env } from "@/lib/env";
-import { livekitReady, roomNameFor } from "@/lib/livekit";
+import { livekitReady, livekitServerUrl, roomNameFor } from "@/lib/livekit";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getSttProvider } from "@/lib/stt/provider";
 import { isAiSpeakingLocked } from "@/lib/room-sync";
@@ -270,7 +270,7 @@ export async function PATCH(request: Request, { params }: Params) {
     if (livekitReady()) {
       try {
         const roomService = new RoomServiceClient(
-          env.livekitHost,
+          livekitServerUrl(),
           env.livekitApiKey,
           env.livekitApiSecret,
         );
@@ -358,7 +358,7 @@ export async function DELETE(request: Request, { params }: Params) {
         });
         if (discussion) {
           const roomService = new RoomServiceClient(
-            env.livekitHost,
+            livekitServerUrl(),
             env.livekitApiKey,
             env.livekitApiSecret,
           );
@@ -800,7 +800,7 @@ export async function POST(request: Request, { params }: Params) {
     if (livekitReady()) {
       try {
         const roomService = new RoomServiceClient(
-          env.livekitHost,
+          livekitServerUrl(),
           env.livekitApiKey,
           env.livekitApiSecret,
         );

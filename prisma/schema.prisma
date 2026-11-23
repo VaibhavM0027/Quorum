@@ -40,6 +40,7 @@ enum Relevance {
 }
 
 enum AiEventKind {
+  WELCOME // AI moderator welcome and turn-taking instructions
   QUESTION // AI asked the room a question
   NUDGE // AI encouraged a quiet participant
   SILENCE // AI flagged that nobody is speaking
@@ -64,9 +65,36 @@ enum TranscriptStatus {
   FINAL
 }
 
+enum TurnState {
+  IDLE
+  AI_SPEAKING
+  OPEN
+  PARTICIPANT_SPEAKING
+}
+
+enum TurnRequestStatus {
+  REQUESTED
+  GRANTED
+  COMPLETED
+  PASSED
+  CANCELLED
+}
+
+enum TurnRequestSource {
+  PARTICIPANT
+  AI
+  HOST
+}
+
+enum AiSpeechReceiptStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
 /**
  * The life of one invitation the moderator offered to a participant.
- *
  * An invitation is how the moderator hands the floor over, so its outcome is
  * the evidence behind the participation score: did the participant take the
  * floor, ask to be excused, say nothing, or lose their microphone? Only
@@ -118,36 +146,38 @@ model PasswordReset {
 // ---------------------------------------------------------------------------
 
 model Discussion {
-  id            String  @id @default(cuid())
-  title         String
-  topic         String
-  context       String  @default("")
-  rules         String  @default("")
-  hostId        String
+  id       String           @id @default(cuid())
+  title    String
+  topic    String
+  context  String           @default("")
+  rules    String           @default("")
+  hostId   String
   /// Human friendly code participants type in, e.g. "K7QM2P".
-  joinCode      String  @unique
-  status        DiscussionStatus @default(SCHEDULED)
-  mode          DiscussionMode   @default(AI_MODERATED)
+  joinCode String           @unique
+  status   DiscussionStatus @default(SCHEDULED)
+  mode     DiscussionMode   @default(AI_MODERATED)
 
-  scheduledAt   DateTime
-  durationMin   Int      @default(30)
-  maxParticipants Int    @default(12)
+  scheduledAt     DateTime
+  durationMin     Int      @default(30)
+  maxParticipants Int      @default(12)
 
-  aiEnabled             Boolean @default(true)
-  transcriptionEnabled  Boolean @default(true)
+  aiEnabled            Boolean @default(true)
+  transcriptionEnabled Boolean @default(true)
   /**
    * How long the room may stay quiet before the moderator acts on it. The
    * recommended setting is close to six seconds: long enough that a thinking
    * pause inside a speech is never mistaken for the end of a turn, short
    * enough that a dead room is picked up before it stalls.
    */
-  silencePromptSec      Int     @default(6)
+  silencePromptSec     Int     @default(6)
   /**
    * How long an invited participant is given to respond before the moderator
    * checks in on them, and then before the invitation is recorded as
    * unanswered.
    */
-  inviteResponseSec     Int     @default(12)
+  inviteResponseSec    Int     @default(12)
+  /// Maximum time allowed for one participant turn.
+  turnDurationSec      Int     @default(120)
 
   /**
    * Where the conversation-management engine believes the room is right now
@@ -155,14 +185,15 @@ model Discussion {
    * so every browser in the room shows the same state, and so the decision that
    * produced it stays auditable.
    */
-  conversationState     String  @default("IDLE")
-  conversationStateAt   DateTime?
+  conversationState   String    @default("IDLE")
+  conversationStateAt DateTime?
 
   /**
    * Last moment the moderator's voice was audible in the room, reported by the
    * browsers playing it back. Used to keep the moderator silent while it is
    * already speaking.
    */
+<<<<<<< HEAD
   lastAiSpokeAt         DateTime?
   /**
    * Server-authoritative timestamp until which the AI moderator holds the
@@ -179,28 +210,41 @@ model Discussion {
   welcomePosted         Boolean @default(false)
   /** Ensures the AI closing summary is posted once when the meeting ends. */
   summaryPosted         Boolean @default(false)
+=======
+  lastAiSpokeAt DateTime?
+
+  /// Server-authoritative floor state; all microphones are denied outside a turn.
+  turnState               TurnState @default(IDLE)
+  activeTurnParticipantId String?
+  turnStartedAt           DateTime?
+  turnEndsAt              DateTime?
+  activeAiSpeechEventId   String?   @unique
+  aiSpeechDeadlineAt      DateTime?
+>>>>>>> a42fb56 (Mic fixes with ui changes)
 
   /// Breakout rooms split a large room into groups small enough to talk in.
   /// Off by default: a discussion runs as one room until the host asks for it.
-  breakoutEnabled       Boolean @default(false)
+  breakoutEnabled   Boolean @default(false)
   /// How many students the host wants in each breakout room. Drives how many
   /// rooms are needed for the students who are actually present.
-  breakoutGroupSize     Int     @default(8)
+  breakoutGroupSize Int     @default(8)
 
   startedAt DateTime?
   endedAt   DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  host         User                    @relation("HostedDiscussions", fields: [hostId], references: [id], onDelete: Cascade)
-  participants DiscussionParticipant[]
-  segments     TranscriptSegment[]
-  aiEvents     AiEvent[]
-  invitations  Invitation[]
-  messages     ChatMessage[]
-  evaluations  Evaluation[]
-  reports      Report[]
-  recordings   Recording[]
+  host                User                    @relation("HostedDiscussions", fields: [hostId], references: [id], onDelete: Cascade)
+  participants        DiscussionParticipant[]
+  segments            TranscriptSegment[]
+  aiEvents            AiEvent[]
+  invitations         Invitation[]
+  turnRequests        TurnRequest[]
+  activeAiSpeechEvent AiEvent?                @relation("ActiveAiSpeech", fields: [activeAiSpeechEventId], references: [id], onDelete: SetNull)
+  messages            ChatMessage[]
+  evaluations         Evaluation[]
+  reports             Report[]
+  recordings          Recording[]
 
   @@index([hostId, status])
   @@index([status, scheduledAt])
@@ -228,7 +272,9 @@ model DiscussionParticipant {
    * recognition at all.
    */
   transcribing         Boolean   @default(false)
-  /** When the last "I am transcribing" report arrived, so a stale claim expires. */
+  /**
+   * When the last "I am transcribing" report arrived, so a stale claim expires.
+   */
   transcribingAt       DateTime?
   createdAt            DateTime  @default(now())
   /**
@@ -243,46 +289,50 @@ model DiscussionParticipant {
    * Breakout room this student is allocated to, 1..N. Null while breakout rooms
    * are off, and for the host, who moderates from the main room.
    */
-  breakoutRoom         Int?
+  breakoutRoom Int?
 
   // -- Live audio activity, reported from LiveKit -------------------------
   /**
+   * /**
+   * /**
    * Last moment this participant's own audio track carried speech. LiveKit's
    * audio-activity events drive this, not the transcript: a browser knows
    * somebody has the floor seconds before the recogniser commits their
    * sentence, and the moderator must never talk over them in that gap.
    */
-  lastAudioAt          DateTime?
+  lastAudioAt   DateTime?
   /**
    * Set at the moment this participant took the floor and cleared when they
    * stop. Non-null (with a fresh `lastAudioAt`) is what "currently speaking"
    * means to the conversation engine.
    */
-  speakingSince        DateTime?
+  speakingSince DateTime?
 
   // -- Invitation record ---------------------------------------------------
   /// Times the moderator has offered this participant the floor.
-  invitedCount         Int @default(0)
+  invitedCount          Int       @default(0)
   /// Invitations this participant took up.
-  answeredInviteCount  Int @default(0)
+  answeredInviteCount   Int       @default(0)
   /// Invitations this participant never responded to. The only penalised outcome.
-  unansweredInviteCount Int @default(0)
+  unansweredInviteCount Int       @default(0)
   /// Times this participant asked to be excused. Respected, never penalised.
-  passCount            Int @default(0)
-  lastInvitedAt        DateTime?
+  passCount             Int       @default(0)
+  lastInvitedAt         DateTime?
   /**
    * Set when this participant's microphone or connection fails. A participant
    * with a recent technical issue is never penalised for missing an invitation,
    * and is left out of invitations until their audio comes back.
    */
-  audioIssueAt         DateTime?
+  audioIssueAt          DateTime?
 
-  discussion Discussion          @relation(fields: [discussionId], references: [id], onDelete: Cascade)
-  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  segments   TranscriptSegment[]
-  evaluation Evaluation?
-  recordings Recording[]
-  invitations Invitation[]
+  discussion     Discussion          @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  segments       TranscriptSegment[]
+  evaluation     Evaluation?
+  recordings     Recording[]
+  invitations    Invitation[]
+  turnRequests   TurnRequest[]
+  speechReceipts AiSpeechReceipt[]
 
   @@unique([discussionId, userId])
   // One student per seat. Postgres allows many rows with a null seat, which is
@@ -293,26 +343,25 @@ model DiscussionParticipant {
 
 /**
  * One invitation the moderator offered to a participant.
- *
  * The row is the moderator's short-term memory: it records who was asked, when,
  * and by when they were expected to answer, so a later tick can decide whether
  * the participant responded, asked to pass, or ignored the invitation — instead
  * of asking the same person again.
  */
 model Invitation {
-  id            String @id @default(cuid())
+  id            String  @id @default(cuid())
   discussionId  String
   participantId String
   /// The `NUDGE` event that was spoken when the floor was offered.
   aiEventId     String?
 
-  status      InvitationStatus @default(PENDING)
-  invitedAt   DateTime         @default(now())
+  status            InvitationStatus @default(PENDING)
+  invitedAt         DateTime         @default(now())
   /// When the response window closes. Extended once by the follow-up check.
-  respondByAt DateTime
+  respondByAt       DateTime
   /// How many times the moderator has asked, including the initial offer.
-  prompts     Int              @default(1)
-  respondedAt DateTime?
+  prompts           Int              @default(1)
+  respondedAt       DateTime?
   /// The transcript segment that proved the participant's response, if any.
   responseSegmentId String?
 
@@ -323,6 +372,28 @@ model Invitation {
 
   @@index([discussionId, status])
   @@index([participantId])
+}
+
+/**
+ * A durable FIFO request or invitation to take the speaking floor.
+ */
+model TurnRequest {
+  id            String            @id @default(cuid())
+  discussionId  String
+  participantId String
+  requestId     String?
+  status        TurnRequestStatus @default(REQUESTED)
+  source        TurnRequestSource @default(PARTICIPANT)
+  requestedAt   DateTime          @default(now())
+  grantedAt     DateTime?
+  finishedAt    DateTime?
+
+  discussion  Discussion            @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([participantId, requestId])
+  @@index([discussionId, status, requestedAt])
+  @@index([participantId, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -337,13 +408,18 @@ model TranscriptSegment {
   text       String
   startedAt  DateTime
   endedAt    DateTime
+<<<<<<< HEAD
   durationMs Int      @default(0)
   wordCount  Int      @default(0)
   confidence Float?
+=======
+  durationMs Int              @default(0)
+  wordCount  Int              @default(0)
+>>>>>>> a42fb56 (Mic fixes with ui changes)
   status     TranscriptStatus @default(FINAL)
   /// Stable client-generated key that lets a live draft become its final row.
   streamId   String?
-  revision   Int      @default(0)
+  revision   Int              @default(0)
 
   relevance       Relevance @default(PENDING)
   relevanceScore  Float?
@@ -356,10 +432,10 @@ model TranscriptSegment {
   discussion  Discussion            @relation(fields: [discussionId], references: [id], onDelete: Cascade)
   participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 
+  @@unique([participantId, streamId])
   @@index([discussionId, startedAt])
   @@index([discussionId, status, startedAt])
   @@index([participantId])
-  @@unique([participantId, streamId])
 }
 
 // ---------------------------------------------------------------------------
@@ -367,12 +443,12 @@ model TranscriptSegment {
 // ---------------------------------------------------------------------------
 
 model AiEvent {
-  id           String      @id @default(cuid())
-  discussionId String
+  id            String      @id @default(cuid())
+  discussionId  String
   participantId String?
-  kind         AiEventKind
-  message      String
-  source       String      @default("gemini")
+  kind          AiEventKind
+  message       String
+  source        String      @default("gemini")
   /**
    * When the assistant has told the room that it is about to act, the moment
    * that action becomes due. The room counts down to it on screen, so everyone
@@ -380,12 +456,32 @@ model AiEvent {
    * because somebody started speaking again, or when the event schedules
    * nothing at all.
    */
-  dueAt        DateTime?
-  createdAt    DateTime    @default(now())
+  dueAt         DateTime?
+  createdAt     DateTime    @default(now())
 
-  discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  discussion          Discussion        @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+  speechReceipts      AiSpeechReceipt[]
+  activeForDiscussion Discussion?       @relation("ActiveAiSpeech")
 
   @@index([discussionId, createdAt])
+}
+
+/**
+ * Per-browser completion receipt for the shared browser-synthesized AI voice.
+ */
+model AiSpeechReceipt {
+  id            String                @id @default(cuid())
+  aiEventId     String
+  participantId String
+  status        AiSpeechReceiptStatus @default(PENDING)
+  completedAt   DateTime?
+  createdAt     DateTime              @default(now())
+
+  aiEvent     AiEvent               @relation(fields: [aiEventId], references: [id], onDelete: Cascade)
+  participant DiscussionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([aiEventId, participantId])
+  @@index([participantId, status])
 }
 
 model ChatMessage {
@@ -411,11 +507,11 @@ model Evaluation {
   discussionId  String
   participantId String @unique
 
-  overallScore        Float?
-  speakingMs          Int   @default(0)
-  contributions       Int   @default(0)
-  wordCount           Int   @default(0)
-  participationPct    Float @default(0)
+  overallScore     Float?
+  speakingMs       Int    @default(0)
+  contributions    Int    @default(0)
+  wordCount        Int    @default(0)
+  participationPct Float  @default(0)
 
   relevantCount   Int @default(0)
   partialCount    Int @default(0)
@@ -424,15 +520,15 @@ model Evaluation {
   averageRelevance Float?
 
   /// Per-dimension scores: [{ key, label, weight, score, rationale }]
-  dimensions Json  @default("[]")
+  dimensions Json   @default("[]")
   /// Bullet points: { strengths: string[], improvements: string[], evidence: string[] }
-  notes      Json  @default("{}")
+  notes      Json   @default("{}")
   summary    String @default("")
 
   incomplete       Boolean @default(false)
   incompleteReason String?
 
-  source String @default("gemini")
+  source String  @default("gemini")
   model  String?
 
   createdAt DateTime @default(now())
@@ -445,11 +541,11 @@ model Evaluation {
 }
 
 model Report {
-  id            String     @id @default(cuid())
-  discussionId  String
-  participantId String?
-  kind          ReportKind
-  createdAt     DateTime   @default(now())
+  id               String     @id @default(cuid())
+  discussionId     String
+  participantId    String?
+  kind             ReportKind
+  createdAt        DateTime   @default(now())
   lastDownloadedAt DateTime?
 
   discussion Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
@@ -463,7 +559,6 @@ model Report {
 
 /**
  * One stored audio recording of a discussion.
- *
  * The audio itself lives in the recording store on disk (see
  * `src/lib/recordings.ts`); this row is the durable record of what was
  * captured, who captured it and where the file is. Keeping the bytes out of
@@ -471,8 +566,8 @@ model Report {
  * the browser with range requests.
  */
 model Recording {
-  id           String @id @default(cuid())
-  discussionId String
+  id                      String  @id @default(cuid())
+  discussionId            String
   /**
    * The participant whose browser captured the room mix. A recording is made
    * from one client so the room produces a single file rather than one clip per
@@ -483,9 +578,9 @@ model Recording {
   status     RecordingStatus @default(RECORDING)
   /// Path of the audio file relative to the recording store root.
   storageKey String?
-  mimeType   String @default("audio/webm")
-  byteSize   Int    @default(0)
-  durationMs Int    @default(0)
+  mimeType   String          @default("audio/webm")
+  byteSize   Int             @default(0)
+  durationMs Int             @default(0)
 
   startedAt DateTime  @default(now())
   endedAt   DateTime?
