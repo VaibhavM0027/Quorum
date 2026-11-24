@@ -140,14 +140,10 @@ export function useAssistantVoice({
       }
 
       // Wait for a gap: never talk over a participant, and stay muted on request.
-<<<<<<< HEAD
-      if (!enabledRef.current || !unlockedRef.current || holdRef.current) {
+      if (!unlockedRef.current || holdRef.current) {
         if (wasSpeaking) onSpeakingChangeRef.current?.(false);
         return;
       }
-=======
-      if (!unlockedRef.current || holdRef.current) return;
->>>>>>> a42fb56 (Mic fixes with ui changes)
 
       let item = queueRef.current.shift();
       while (item && Date.now() - item.queuedAt > maxDeferMs) {
@@ -176,11 +172,8 @@ export function useAssistantVoice({
         speakingRef.current = false;
         setSpeaking(false);
         setSpokenText(null);
-<<<<<<< HEAD
         onSpeakingChangeRef.current?.(false);
-=======
         pending.onFinished("FAILED");
->>>>>>> a42fb56 (Mic fixes with ui changes)
       };
 
       let started = false;
@@ -211,11 +204,8 @@ export function useAssistantVoice({
         if (finished) return;
         finished = true;
         clearTimeout(watchdog);
-<<<<<<< HEAD
         clearTimeout(finishWatchdog);
-=======
         pending.onFinished("COMPLETED");
->>>>>>> a42fb56 (Mic fixes with ui changes)
         step();
       };
       utterance.onerror = (event) => {
@@ -224,10 +214,7 @@ export function useAssistantVoice({
         clearTimeout(watchdog);
         clearTimeout(finishWatchdog);
         if (event.error === "not-allowed") {
-<<<<<<< HEAD
-=======
           // Do not play a delayed AI sentence over a participant who took the floor.
->>>>>>> a42fb56 (Mic fixes with ui changes)
           release();
           return;
         }
@@ -256,12 +243,6 @@ export function useAssistantVoice({
       onFinished: (status: "COMPLETED" | "FAILED") => void,
     ) => {
       const message = text.trim();
-<<<<<<< HEAD
-      if (!supported || !message) return;
-      if (message === lastSpokenRef.current) return;
-      if (queueRef.current.some((item) => item.text === message)) return;
-      queueRef.current.push({ text: message, queuedAt: Date.now() });
-=======
       if (!supported || !message) return false;
       // The assistant must never repeat itself.
       if (
@@ -271,7 +252,6 @@ export function useAssistantVoice({
         return false;
       }
       queueRef.current.push({ text: message, eventId, queuedAt: Date.now(), onFinished });
->>>>>>> a42fb56 (Mic fixes with ui changes)
       drain();
       return true;
     },

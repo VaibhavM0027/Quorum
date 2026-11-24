@@ -560,13 +560,10 @@ async function runAssistantTickInternal(discussionId: string): Promise<Assistant
       inviteResponseSec: true,
       conversationState: true,
       lastAiSpokeAt: true,
-<<<<<<< HEAD
       aiSpeakingUntil: true,
       pausedAt: true,
       welcomePosted: true,
-=======
       turnState: true,
->>>>>>> a42fb56 (Mic fixes with ui changes)
       startedAt: true,
       participants: {
         select: {

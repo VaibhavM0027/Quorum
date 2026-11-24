@@ -61,12 +61,11 @@ export function browserLivekitUrl(): string {
   return env.livekitHost.replace(/^http/, "ws");
 }
 
-<<<<<<< HEAD
 /** URL the Node.js server uses to connect to LiveKit over WebSocket (for STT worker). */
 export function serverLivekitWsUrl(): string {
-  if (env.livekitUrl) return env.livekitUrl;
-  return env.livekitHost.replace(/^http/, "ws");
-=======
+  return livekitServerUrl().replace(/^http/, "ws");
+}
+
 /**
  * URL used by server-side LiveKit APIs. Localhost is the example default, so
  * when a cloud browser URL is configured without changing that default, point
@@ -89,7 +88,6 @@ export function resolveLivekitServerUrl(configuredHost: string, browserUrl: stri
     return browserUrl.replace(/^wss:/i, "https:").replace(/^ws:/i, "http:");
   }
   return configuredHost;
->>>>>>> a42fb56 (Mic fixes with ui changes)
 }
 
 export type TokenOptions = {

@@ -160,6 +160,41 @@ describe("Quorum 12-scenario end-to-end verification suite", () => {
     vi.clearAllMocks();
   });
 
+  it("automatically completes a live meeting after its configured duration", async () => {
+    setActor(host);
+    const startedAt = new Date(Date.now() - 4 * 60_000);
+    await mockPrisma.discussion.update({
+      where: { id: discussionId },
+      data: { status: "LIVE", durationMin: 5, startedAt },
+    });
+
+    const routeParams = { params: Promise.resolve({ id: discussionId }) };
+    const beforeDeadline = await discussionGet(
+      new Request(`http://localhost/api/discussions/${discussionId}`),
+      routeParams,
+    );
+    expect((await beforeDeadline.json()).discussion.status).toBe("LIVE");
+
+    const expiredStartedAt = new Date(Date.now() - 6 * 60_000);
+    await mockPrisma.discussion.update({
+      where: { id: discussionId },
+      data: { startedAt: expiredStartedAt },
+    });
+    const afterDeadline = await discussionGet(
+      new Request(`http://localhost/api/discussions/${discussionId}`),
+      routeParams,
+    );
+    const data = (await afterDeadline.json()) as {
+      discussion: { status: string; endedAt: string };
+    };
+
+    expect(afterDeadline.status).toBe(200);
+    expect(data.discussion.status).toBe("COMPLETED");
+    expect(new Date(data.discussion.endedAt).getTime()).toBe(
+      expiredStartedAt.getTime() + 5 * 60_000,
+    );
+  });
+
   async function joinParticipant(actor: Actor) {
     setActor(actor);
     const res = await joinPost(

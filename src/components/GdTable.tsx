@@ -1,7 +1,6 @@
 "use client";
 
 import {
-<<<<<<< HEAD
   Bot,
   Crown,
   Lock,
@@ -15,19 +14,6 @@ import {
 import MediaTrack from "@/components/MediaTrack";
 import { CONVERSATION_STATE_LABEL, coerceConversationState } from "@/lib/conversation-state";
 import { headPosition, seatPosition } from "@/lib/seats";
-=======
-  Crown,
-  Mic,
-  MicOff,
-  Sparkles,
-  Video,
-  VideoOff,
-  Wifi,
-  WifiOff,
-} from "lucide-react";
-import MediaTrack from "@/components/MediaTrack";
-import { seatPosition } from "@/lib/seats";
->>>>>>> a42fb56 (Mic fixes with ui changes)
 
 export type SeatPerson = {
   id: string;
@@ -55,155 +41,13 @@ function tileWidthPercent(total: number): number {
   if (total <= 8) return 14.5;
   if (total <= 14) return 12;
   if (total <= 22) return 10;
-<<<<<<< HEAD
   return 8.5;
-=======
-  return 8;
-}
-
-function initials(name: string): string {
-  return name
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part[0] ?? "")
-    .join("")
-    .toUpperCase();
-}
-
-function DeviceIndicators({
-  media,
-  connected,
-}: {
-  media: SeatMedia | null;
-  connected: boolean;
-}) {
-  return (
-    <span className="flex items-center gap-1" aria-hidden="true">
-      {connected ? <Wifi className="h-3 w-3 text-accent" /> : <WifiOff className="h-3 w-3 text-muted" />}
-      {media?.micEnabled ? <Mic className="h-3 w-3 text-accent" /> : <MicOff className="h-3 w-3 text-muted" />}
-      {media?.camEnabled ? <Video className="h-3 w-3 text-accent" /> : <VideoOff className="h-3 w-3 text-muted" />}
-    </span>
-  );
-}
-
-function Seat({
-  person,
-  media,
-  position,
-  width,
-  isActiveSpeaker,
-  selfUserId,
-  compact = false,
-}: {
-  person: SeatPerson;
-  media: SeatMedia | null;
-  position?: { left: number; top: number };
-  width?: number;
-  isActiveSpeaker: boolean;
-  selfUserId: string;
-  compact?: boolean;
-}) {
-  const connected = Boolean(media);
-  const name = person.userId === selfUserId ? `${person.name} (you)` : person.name;
-  const cameraTrack = media?.camEnabled ? media.videoTrack : null;
-  const status = [
-    connected ? "connected" : "not connected",
-    media?.micEnabled ? "microphone on" : "microphone off",
-    media?.camEnabled ? "camera on" : "camera off",
-    isActiveSpeaker ? "speaking turn" : "",
-  ]
-    .filter(Boolean)
-    .join(", ");
-
-  return (
-    <div
-      className={`${
-        compact ? "flex min-w-0 items-center gap-3 rounded-xl border p-2.5" : "absolute -translate-x-1/2 -translate-y-1/2"
-      } ${isActiveSpeaker ? "border-accent bg-accent/10 shadow-[0_0_0_2px_rgba(52,211,153,0.2)]" : "border-line bg-panel"}`}
-      style={
-        compact
-          ? undefined
-          : {
-              left: `${position?.left ?? 50}%`,
-              top: `${position?.top ?? 50}%`,
-              width: `${width ?? 16}%`,
-            }
-      }
-      role="group"
-      aria-label={`${name}, ${status}`}
-    >
-      {compact ? (
-        <>
-          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-input text-sm font-semibold text-ink">
-            {initials(person.name)}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-1 truncate text-sm font-medium">
-              {person.isHost && <Crown className="h-3.5 w-3.5 text-accent" />}
-              {name}
-            </span>
-            <span className="mt-1 flex items-center gap-1.5 text-xs text-muted">
-              <DeviceIndicators media={media} connected={connected} />
-              <span>
-                {isActiveSpeaker
-                  ? "Speaking now"
-                  : connected
-                    ? "At the table"
-                    : person.joinedAt
-                      ? "Reconnecting"
-                      : "Not connected"}
-              </span>
-            </span>
-          </span>
-        </>
-      ) : (
-        <div className="overflow-hidden rounded-xl border border-white/10 bg-[#111a15] shadow-lg">
-          <div className="relative aspect-[4/3] overflow-hidden bg-[radial-gradient(circle,#304337,#17221c)]">
-            {cameraTrack ? (
-              <MediaTrack
-                track={cameraTrack}
-                kind="video"
-                muted={person.userId === selfUserId}
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              <div className="grid h-full w-full place-items-center">
-                <span className="grid h-10 w-10 place-items-center rounded-full border border-white/10 bg-white/10 text-xs font-semibold text-white sm:h-12 sm:w-12 sm:text-sm">
-                  {initials(person.name)}
-                </span>
-              </div>
-            )}
-            {person.seatNumber !== null && (
-              <span className="absolute left-1.5 top-1.5 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                Seat {person.seatNumber}
-              </span>
-            )}
-            {isActiveSpeaker && (
-              <span className="absolute right-1.5 top-1.5 rounded-full border border-accent/60 bg-black/75 px-1.5 py-1 text-[9px] font-semibold text-accent">
-                Speaking now
-              </span>
-            )}
-          </div>
-          <div className="flex min-w-0 items-center justify-between gap-1 px-2 py-1.5">
-            <span className="flex min-w-0 items-center gap-1 truncate text-[11px] font-medium text-ink">
-              {person.isHost && <Crown className="h-3 w-3 shrink-0 text-accent" />}
-              <span className="truncate">{name}</span>
-            </span>
-            <DeviceIndicators media={media} connected={connected} />
-          </div>
-        </div>
-      )}
-    </div>
-  );
->>>>>>> a42fb56 (Mic fixes with ui changes)
 }
 
 export default function GdTable({
   participants,
   tiles,
   selfUserId,
-<<<<<<< HEAD
   aiEnabled = true,
   aiSpeaking = false,
   conversationState = "IDLE",
@@ -211,17 +55,10 @@ export default function GdTable({
   turnQueue = [],
   paused = false,
   invitedParticipantId = null,
-=======
-  activeSpeakerId,
-  aiEnabled,
-  aiSpeaking,
-  topic,
->>>>>>> a42fb56 (Mic fixes with ui changes)
 }: {
   participants: SeatPerson[];
   tiles: SeatMedia[];
   selfUserId: string;
-<<<<<<< HEAD
   aiEnabled?: boolean;
   aiSpeaking?: boolean;
   conversationState?: string;
@@ -477,97 +314,12 @@ export default function GdTable({
               position={seatPosition(index, seatCount, 0.84)}
               width={tileWidth}
               media={mediaByUser.get(occupant.userId) ?? null}
-=======
-  activeSpeakerId: string | null;
-  aiEnabled: boolean;
-  aiSpeaking: boolean;
-  topic: string;
-}) {
-  const mediaByUser = new Map(tiles.map((tile) => [tile.identity, tile]));
-  const activeParticipants = participants.filter((person) => !person.removed && !person.leftAt);
-  const seatHolders = new Map<number, SeatPerson>();
-  const peopleAtTable: SeatPerson[] = [];
-  let host: SeatPerson | null = null;
-
-  for (const person of activeParticipants) {
-    if (person.isHost) {
-      host = host ?? person;
-    } else {
-      peopleAtTable.push(person);
-      if (person.seatNumber !== null) seatHolders.set(person.seatNumber, person);
-    }
-  }
-
-  const seats = Array.from({ length: maxSeats }, (_, index) => index + 1);
-  const width = tileWidthPercent(maxSeats);
-  const activePerson = activeSpeakerId
-    ? participants.find((person) => person.id === activeSpeakerId) ?? null
-    : null;
-  const hostMedia = host ? mediaByUser.get(host.userId) ?? null : null;
-
-  return (
-    <section className="card overflow-hidden">
-      <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">The discussion table</h2>
-          <p className="mt-1 max-w-2xl truncate text-xs text-muted">{topic}</p>
-        </div>
-        <span className="pill">{activeParticipants.length} {activeParticipants.length === 1 ? "person" : "people"} present</span>
-      </header>
-
-      <div className="relative mx-auto mt-3 hidden aspect-[16/10] w-full max-w-4xl sm:block">
-        <div
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[50%] border-[5px] border-[#81694c] shadow-[inset_0_0_0_3px_rgba(25,18,12,0.75),0_18px_36px_rgba(0,0,0,0.35)]"
-          style={{
-            width: "68%",
-            height: "65%",
-            background: "radial-gradient(ellipse at 42% 34%, #534332 0%, #382d22 56%, #271f18 100%)",
-          }}
-        />
-        <div className="absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center">
-          {aiEnabled ? (
-            <div className={`rounded-2xl border px-4 py-3 shadow-xl ${aiSpeaking ? "border-accent bg-[#10251a]" : "border-[#9c8058] bg-[#2b241c]"}`}>
-              <span className={`mx-auto grid h-9 w-9 place-items-center rounded-full ${aiSpeaking ? "bg-accent text-[#06170f]" : "bg-[#8a704d] text-white"}`}>
-                <Sparkles className="h-4 w-4" />
-              </span>
-              <p className="mt-1 text-xs font-semibold text-white">AI moderator</p>
-              <p className={`mt-0.5 text-[10px] ${aiSpeaking ? "text-accent" : "text-[#d1c2a8]"}`}>
-                {aiSpeaking ? "Speaking · everyone muted" : "Facilitating"}
-              </p>
-            </div>
-          ) : (
-            <div className="rounded-full border border-[#9c8058] bg-[#2b241c]/90 px-4 py-2 text-xs font-medium text-[#eadcc5]">
-              Open discussion
-            </div>
-          )}
-          {!aiSpeaking && activePerson && (
-            <p className="mt-2 rounded-full bg-black/65 px-3 py-1 text-[10px] font-medium text-white">
-              {activePerson.name} has the floor
-            </p>
-          )}
-        </div>
-
-        {seats.map((seatNumber) => {
-          const person = seatHolders.get(seatNumber);
-          if (!person) return null;
-          const isActiveSpeaker = person.id === activeSpeakerId;
-          return (
-            <Seat
-              key={`seat-${seatNumber}`}
-              person={person}
-              media={mediaByUser.get(person.userId) ?? null}
-              position={seatPosition(seatNumber - 1, maxSeats)}
-              width={width}
-              isActiveSpeaker={isActiveSpeaker}
-              selfUserId={selfUserId}
->>>>>>> a42fb56 (Mic fixes with ui changes)
             />
           );
         })}
 
         {/* Host seated at head of table */}
         {host && (
-<<<<<<< HEAD
           <Seat
             key={`seat-host-${host.id}`}
             seatNumber={null}
@@ -799,45 +551,10 @@ function Seat({
             >
               {name.slice(0, 2)}
             </span>
-=======
-          <div
-            className="absolute -translate-x-1/2 -translate-y-1/2"
-            style={{ left: "50%", top: "14%", width: `${Math.max(14, Math.min(width, 18))}%` }}
-          >
-            <div
-              className="flex items-center gap-2 rounded-xl border border-[#9c8058] bg-[#211d18] p-2 shadow-lg"
-              role="group"
-              aria-label={`Human host ${host.name}, ${hostMedia ? "connected" : "not connected"}`}
-            >
-              <span className="grid h-9 w-12 shrink-0 place-items-center overflow-hidden rounded-lg bg-input">
-                {hostMedia?.camEnabled && hostMedia.videoTrack ? (
-                  <MediaTrack
-                    track={hostMedia.videoTrack}
-                    kind="video"
-                    muted={host.userId === selfUserId}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <span className="text-xs font-semibold text-ink">{initials(host.name)}</span>
-                )}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex min-w-0 items-center gap-1 truncate text-[11px] font-medium text-white">
-                  <Crown className="h-3 w-3 shrink-0 text-accent" />
-                  <span className="truncate">{host.userId === selfUserId ? `${host.name} (you)` : host.name}</span>
-                </span>
-                <span className="mt-1 flex items-center justify-between gap-1 text-[9px] text-[#d1c2a8]">
-                  <span>Human host</span>
-                  <DeviceIndicators media={hostMedia} connected={Boolean(hostMedia)} />
-                </span>
-              </span>
-            </div>
->>>>>>> a42fb56 (Mic fixes with ui changes)
           </div>
         )}
       </div>
 
-<<<<<<< HEAD
         {/* Top-left seat/host indicator */}
         {seatNumber !== null ? (
           <span className="absolute left-1.5 top-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[9px] font-semibold text-white backdrop-blur-sm">
@@ -904,49 +621,8 @@ function Seat({
               <WaveformBars active />
             </span>
           )}
-=======
-      <div className="sm:hidden">
-        <div className="relative mt-3 flex min-h-36 items-center justify-center overflow-hidden rounded-[50%] border-[5px] border-[#81694c] shadow-[inset_0_0_0_3px_rgba(25,18,12,0.75)]" style={{ background: "radial-gradient(ellipse at 42% 34%, #534332 0%, #382d22 56%, #271f18 100%)" }}>
-          <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${aiSpeaking ? "border-accent bg-[#10251a]" : "border-[#9c8058] bg-[#2b241c]"}`}>
-            <span className="grid h-9 w-9 place-items-center rounded-full bg-[#8a704d] text-white"><Sparkles className="h-4 w-4" /></span>
-            <span>
-              <span className="block text-xs font-semibold text-white">{aiEnabled ? "AI moderator" : "Discussion facilitator"}</span>
-              <span className={`block text-[10px] ${aiSpeaking ? "text-accent" : "text-[#d1c2a8]"}`}>
-                {aiSpeaking ? "Speaking · everyone muted" : "At the head of the table"}
-              </span>
-            </span>
-          </div>
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-2 min-[420px]:grid-cols-2">
-          {host && (
-            <Seat
-              person={host}
-              media={hostMedia}
-              isActiveSpeaker={host.id === activeSpeakerId}
-              selfUserId={selfUserId}
-              compact
-            />
-          )}
-          {peopleAtTable.map((person) => (
-            <Seat
-              key={person.id}
-              person={person}
-              media={mediaByUser.get(person.userId) ?? null}
-              isActiveSpeaker={person.id === activeSpeakerId}
-              selfUserId={selfUserId}
-              compact
-            />
-          ))}
->>>>>>> a42fb56 (Mic fixes with ui changes)
         </div>
       </div>
 
-      <p className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-        <span className="inline-flex items-center gap-1"><Wifi className="h-3.5 w-3.5" /> Connected</span>
-        <span className="inline-flex items-center gap-1"><MicOff className="h-3.5 w-3.5" /> Microphone muted</span>
-        <span className="inline-flex items-center gap-1"><VideoOff className="h-3.5 w-3.5" /> Camera off</span>
-        {activePerson && !aiSpeaking && <span className="font-medium text-accent">{activePerson.name} has the active turn</span>}
-      </p>
-    </section>
   );
 }

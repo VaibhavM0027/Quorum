@@ -17,7 +17,8 @@ import {
   syncRoomStateSnapshot,
 } from "@/lib/room-sync";
 import { updateDiscussionSchema } from "@/lib/validation";
-import { createAiSpeechEvent, syncRoomPermissions } from "@/lib/turns";
+import { syncRoomPermissions } from "@/lib/turns";
+import { expireMeetingIfNeeded } from "@/lib/meeting-lifecycle";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,10 +31,15 @@ export async function GET(_request: Request, { params }: Params) {
     const user = await requireSession();
     const { id } = await params;
 
-    await expireStaleAiSpeakingLock(id);
-
-    const access = await loadDiscussionForUser(id, user.id);
+    let access = await loadDiscussionForUser(id, user.id);
     if (!access) return fail("Discussion not found, or you do not have access to it.", 404);
+
+    const meetingExpired = await expireMeetingIfNeeded(id);
+    const aiLockExpired = await expireStaleAiSpeakingLock(id);
+    if (meetingExpired || aiLockExpired) {
+      access = await loadDiscussionForUser(id, user.id);
+      if (!access) return fail("Discussion not found, or you do not have access to it.", 404);
+    }
 
     const { discussion, isHost } = access;
     const aiSpeaking = isAiSpeakingLocked(discussion);
@@ -57,12 +63,9 @@ export async function GET(_request: Request, { params }: Params) {
         transcriptionEnabled: discussion.transcriptionEnabled,
         silencePromptSec: discussion.silencePromptSec,
         inviteResponseSec: discussion.inviteResponseSec,
-<<<<<<< HEAD
-=======
         turnDurationSec: discussion.turnDurationSec,
         // What the conversation-management engine currently believes the room
         // is doing. Every browser reads the same value, so they agree.
->>>>>>> a42fb56 (Mic fixes with ui changes)
         conversationState: discussion.conversationState,
         conversationStateAt: discussion.conversationStateAt,
         aiSpeaking,
@@ -111,19 +114,12 @@ export async function PATCH(request: Request, { params }: Params) {
         id: true,
         hostId: true,
         status: true,
-<<<<<<< HEAD
         mode: true,
         aiEnabled: true,
         transcriptionEnabled: true,
         welcomePosted: true,
         summaryPosted: true,
         startedAt: true,
-=======
-        startedAt: true,
-        aiEnabled: true,
-        topic: true,
-        rules: true,
->>>>>>> a42fb56 (Mic fixes with ui changes)
       },
     });
     if (!discussion) return fail("Discussion not found.", 404);
@@ -137,53 +133,9 @@ export async function PATCH(request: Request, { params }: Params) {
         ? {
             status: "LIVE" as const,
             startedAt: discussion.startedAt ?? now,
-<<<<<<< HEAD
             pausedAt: null,
             conversationState: "WAITING_FOR_PARTICIPANT",
             conversationStateAt: now,
-          }
-        : action === "pause"
-          ? {
-              pausedAt: now,
-              aiSpeakingUntil: null,
-              activeSpeakerId: null,
-              conversationState: "MEETING_PAUSED",
-              conversationStateAt: now,
-            }
-          : action === "resume"
-            ? {
-                pausedAt: null,
-                conversationState: "WAITING_FOR_PARTICIPANT",
-                conversationStateAt: now,
-              }
-            : action === "end"
-              ? {
-                  status: "COMPLETED" as const,
-                  endedAt: now,
-                  pausedAt: null,
-                  aiSpeakingUntil: null,
-                  activeSpeakerId: null,
-                  conversationState: "MEETING_ENDED",
-                  conversationStateAt: now,
-                }
-              : action === "cancel"
-                ? {
-                    status: "CANCELLED" as const,
-                    endedAt: now,
-                    pausedAt: null,
-                    aiSpeakingUntil: null,
-                    activeSpeakerId: null,
-                    conversationState: "MEETING_ENDED",
-                    conversationStateAt: now,
-                  }
-                : {
-                    status: "LIVE" as const,
-                    endedAt: null,
-                    pausedAt: null,
-                    conversationState: "WAITING_FOR_PARTICIPANT",
-                    conversationStateAt: now,
-                  };
-=======
             ...(discussion.status === "LIVE"
               ? {}
               : {
@@ -195,33 +147,78 @@ export async function PATCH(request: Request, { params }: Params) {
                   aiSpeechDeadlineAt: null,
                 }),
           }
-        : action === "end"
+        : action === "pause"
           ? {
-              status: "COMPLETED" as const,
-              endedAt: now,
+              pausedAt: now,
+              aiSpeakingUntil: null,
+              activeSpeakerId: null,
+              conversationState: "MEETING_PAUSED",
+              conversationStateAt: now,
               turnState: "IDLE" as const,
               activeTurnParticipantId: null,
+              turnStartedAt: null,
+              turnEndsAt: null,
               activeAiSpeechEventId: null,
               aiSpeechDeadlineAt: null,
             }
-          : action === "cancel"
+          : action === "resume"
             ? {
-                status: "CANCELLED" as const,
-                endedAt: now,
-                turnState: "IDLE" as const,
+                pausedAt: null,
+                conversationState: "WAITING_FOR_PARTICIPANT",
+                conversationStateAt: now,
+                turnState: "OPEN" as const,
                 activeTurnParticipantId: null,
+                turnStartedAt: null,
+                turnEndsAt: null,
                 activeAiSpeechEventId: null,
                 aiSpeechDeadlineAt: null,
               }
-            : {
-                status: "LIVE" as const,
-                endedAt: null,
-                turnState: "OPEN" as const,
-                activeTurnParticipantId: null,
-                activeAiSpeechEventId: null,
-                aiSpeechDeadlineAt: null,
-              };
->>>>>>> a42fb56 (Mic fixes with ui changes)
+            : action === "end"
+              ? {
+                  status: "COMPLETED" as const,
+                  endedAt: now,
+                  pausedAt: null,
+                  aiSpeakingUntil: null,
+                  activeSpeakerId: null,
+                  conversationState: "MEETING_ENDED",
+                  conversationStateAt: now,
+                  turnState: "IDLE" as const,
+                  activeTurnParticipantId: null,
+                  turnStartedAt: null,
+                  turnEndsAt: null,
+                  activeAiSpeechEventId: null,
+                  aiSpeechDeadlineAt: null,
+                }
+              : action === "cancel"
+                ? {
+                    status: "CANCELLED" as const,
+                    endedAt: now,
+                    pausedAt: null,
+                    aiSpeakingUntil: null,
+                    activeSpeakerId: null,
+                    conversationState: "MEETING_ENDED",
+                    conversationStateAt: now,
+                    turnState: "IDLE" as const,
+                    activeTurnParticipantId: null,
+                    turnStartedAt: null,
+                    turnEndsAt: null,
+                    activeAiSpeechEventId: null,
+                    aiSpeechDeadlineAt: null,
+                  }
+                : {
+                    status: "LIVE" as const,
+                    startedAt: now,
+                    endedAt: null,
+                    pausedAt: null,
+                    conversationState: "WAITING_FOR_PARTICIPANT",
+                    conversationStateAt: now,
+                    turnState: "OPEN" as const,
+                    activeTurnParticipantId: null,
+                    turnStartedAt: null,
+                    turnEndsAt: null,
+                    activeAiSpeechEventId: null,
+                    aiSpeechDeadlineAt: null,
+                  };
 
     const updated = await prisma.discussion.update({ where: { id }, data });
 
@@ -230,7 +227,6 @@ export async function PATCH(request: Request, { params }: Params) {
         where: { discussionId: id, removed: false, joinedAt: null },
         data: { joinedAt: now },
       });
-<<<<<<< HEAD
       if (discussion.transcriptionEnabled) {
         void ensureRoomSttWorker(id, null);
       }
@@ -254,29 +250,6 @@ export async function PATCH(request: Request, { params }: Params) {
       }
     } else if (action === "end" || action === "cancel") {
       stopRoomOrchestrator(id);
-=======
-      if (discussion.status !== "LIVE" && discussion.aiEnabled) {
-        const rules = discussion.rules.trim().replace(/\s+/g, " ").slice(0, 500);
-        const message = [
-          `Welcome to the discussion on ${discussion.topic}.`,
-          rules ? `Our guidelines are: ${rules}.` : "",
-          "Request a turn when you are ready to speak. Only the active speaker can unmute, and you may pass at any time.",
-        ]
-          .filter(Boolean)
-          .join(" ");
-        await prisma.$transaction((tx) =>
-          createAiSpeechEvent(tx, {
-            discussionId: id,
-            kind: "WELCOME",
-            message,
-            source: "system",
-            now,
-          }),
-        );
-      }
-    }
-    if (action === "end" || action === "cancel") {
->>>>>>> a42fb56 (Mic fixes with ui changes)
       await prisma.discussionParticipant.updateMany({
         where: { discussionId: id, leftAt: null },
         data: { leftAt: now, speakingSince: null },

@@ -2,13 +2,10 @@ import { notFound, redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { loadDiscussionForUser } from "@/lib/discussions";
 import { env } from "@/lib/env";
-<<<<<<< HEAD
 import { isAiSpeakingLocked, isMeetingPaused, isRoomSttActive } from "@/lib/room-sync";
-import RoomClient, { type RoomDiscussion } from "@/components/RoomClient";
-=======
+import { expireMeetingIfNeeded } from "@/lib/meeting-lifecycle";
 import RoomEntryClient from "@/components/RoomEntryClient";
 import type { RoomDiscussion } from "@/components/RoomClient";
->>>>>>> a42fb56 (Mic fixes with ui changes)
 
 export const dynamic = "force-dynamic";
 
@@ -17,8 +14,13 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
   const { id } = await params;
   if (!user) redirect(`/login?next=${encodeURIComponent(`/room/${id}`)}`);
 
-  const access = await loadDiscussionForUser(id, user.id);
+  let access = await loadDiscussionForUser(id, user.id);
   if (!access) notFound();
+
+  if (await expireMeetingIfNeeded(id)) {
+    access = await loadDiscussionForUser(id, user.id);
+    if (!access) notFound();
+  }
 
   const { discussion, isHost } = access;
   const me = discussion.participants.find((p) => p.userId === user.id);
@@ -40,15 +42,12 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
     inviteResponseSec: discussion.inviteResponseSec,
     turnDurationSec: discussion.turnDurationSec,
     conversationState: discussion.conversationState,
-<<<<<<< HEAD
     aiSpeaking: isAiSpeakingLocked(discussion),
     paused: isMeetingPaused(discussion),
     activeSpeakerId: discussion.activeSpeakerId,
     serverSttActive: isRoomSttActive(discussion.id),
     breakoutEnabled: discussion.breakoutEnabled,
     breakoutGroupSize: discussion.breakoutGroupSize,
-=======
->>>>>>> a42fb56 (Mic fixes with ui changes)
     scheduledAt: discussion.scheduledAt.toISOString(),
     startedAt: discussion.startedAt?.toISOString() ?? null,
     endedAt: discussion.endedAt?.toISOString() ?? null,

@@ -131,6 +131,12 @@ export function createInMemoryPrisma(): PrismaClient {
         pausedAt: null,
         welcomePosted: false,
         summaryPosted: false,
+        turnState: "IDLE",
+        activeTurnParticipantId: null,
+        turnStartedAt: null,
+        turnEndsAt: null,
+        activeAiSpeechEventId: null,
+        aiSpeechDeadlineAt: null,
         breakoutEnabled: false,
         breakoutGroupSize: 8,
         startedAt: null,
@@ -370,6 +376,13 @@ export function createInMemoryPrisma(): PrismaClient {
         }
       }
       return hydrate(model, created, args);
+    },
+    createMany: async (args: Row) => {
+      const inputs = Array.isArray(args?.data) ? args.data : [args?.data];
+      for (const input of inputs) {
+        getTable(model).push(applyDefaults(model, (input as Row) ?? {}));
+      }
+      return { count: inputs.length };
     },
     update: async (args: Row) => {
       const rows = getTable(model);

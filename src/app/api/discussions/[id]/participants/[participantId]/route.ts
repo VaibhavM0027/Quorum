@@ -76,7 +76,6 @@ export async function PATCH(request: Request, { params }: Params) {
       await assignBreakoutRooms(id);
     }
 
-<<<<<<< HEAD
     const roomBlocked =
       discussion.status !== "LIVE" || isAiSpeakingLocked(discussion) || isMeetingPaused(discussion);
     await enforceParticipantMicPermission({
@@ -87,8 +86,6 @@ export async function PATCH(request: Request, { params }: Params) {
       remove: action === "remove",
     });
 
-    await syncRoomStateSnapshot(id, { broadcast: true, syncMics: false });
-=======
     if (action === "lock-mic" || action === "remove") {
       const now = new Date();
       await prisma.$transaction([
@@ -122,10 +119,10 @@ export async function PATCH(request: Request, { params }: Params) {
         actorIsHost: true,
         action: "finish",
       });
-    } else {
-      await syncRoomPermissions(id);
     }
->>>>>>> a42fb56 (Mic fixes with ui changes)
+
+    await syncRoomPermissions(id);
+    await syncRoomStateSnapshot(id, { broadcast: true, syncMics: false });
 
     return ok({ participant: updated });
   } catch (error) {

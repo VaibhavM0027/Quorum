@@ -26,7 +26,6 @@ import {
   ShieldAlert,
   Sparkles,
   Circle,
-<<<<<<< HEAD
   UsersRound,
   Pause,
   Lock,
@@ -43,13 +42,6 @@ const Table3D = dynamic(() => import("@/components/table3d/Table3D"), {
     </div>
   ),
 });
-import PreJoinLobby, { type PreJoinResult } from "@/components/PreJoinLobby";
-import BreakoutPanel, { type BreakoutCommand } from "@/components/BreakoutPanel";
-=======
-} from "lucide-react";
-import MediaTrack from "@/components/MediaTrack";
-import GdTable from "@/components/GdTable";
->>>>>>> a42fb56 (Mic fixes with ui changes)
 import LiveMonitorPanel, {
   type LiveStat,
   type ParticipantAction,
@@ -104,15 +96,12 @@ export type RoomDiscussion = {
   turnDurationSec: number;
   /** What the conversation-management engine believes the room is doing. */
   conversationState: string;
-<<<<<<< HEAD
   aiSpeaking?: boolean;
   paused?: boolean;
   activeSpeakerId?: string | null;
   serverSttActive?: boolean;
   breakoutEnabled: boolean;
   breakoutGroupSize: number;
-=======
->>>>>>> a42fb56 (Mic fixes with ui changes)
   scheduledAt: string;
   startedAt: string | null;
   endedAt: string | null;
@@ -213,7 +202,6 @@ const AI_KIND_LABEL: Record<string, string> = {
 };
 
 /** Assistant messages that are read aloud as well as shown in the card. */
-<<<<<<< HEAD
 const SPOKEN_AI_KINDS = new Set([
   "WELCOME",
   "QUESTION",
@@ -222,9 +210,6 @@ const SPOKEN_AI_KINDS = new Set([
   "RELEVANCE",
   "FOLLOW_UP",
 ]);
-=======
-const SPOKEN_AI_KINDS = new Set(["WELCOME", "QUESTION", "NUDGE", "SILENCE", "RELEVANCE"]);
->>>>>>> a42fb56 (Mic fixes with ui changes)
 
 /**
  * How long the room counts down for when the server did not stamp a usable
@@ -251,11 +236,12 @@ export default function RoomClient({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-<<<<<<< HEAD
-  const [lobbyResult, setLobbyResult] = useState<PreJoinResult | null>(null);
   const [roomState, setRoomState] = useState<RoomStateBroadcast | null>(null);
   const [tableLayout, setTableLayout] = useState<"round" | "table3d">("round");
   const [webglFallback, setWebglFallback] = useState(false);
+  const [turn, setTurn] = useState<TurnSnapshot | null>(null);
+  const [turnBusy, setTurnBusy] = useState(false);
+  const [turnError, setTurnError] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -275,11 +261,6 @@ export default function RoomClient({
       /* ignore */
     }
   }, []);
-=======
-  const [turn, setTurn] = useState<TurnSnapshot | null>(null);
-  const [turnBusy, setTurnBusy] = useState(false);
-  const [turnError, setTurnError] = useState<string | null>(null);
->>>>>>> a42fb56 (Mic fixes with ui changes)
 
   const isLive = discussion.status === "LIVE";
 
@@ -294,25 +275,12 @@ export default function RoomClient({
   const transcriptDraftHandlerRef = useRef<(message: TranscriptDraftMessage) => void>(() => {});
   const media = useLivekitRoom(
     discussion.id,
-<<<<<<< HEAD
-    myBreakoutRoom,
-    isLive && Boolean(participantId) && Boolean(lobbyResult),
-    () => transcriptRefreshRef.current(),
-    (message) => transcriptDraftHandlerRef.current(message),
-    {
-      initialMicEnabled: lobbyResult?.micEnabled ?? false,
-      initialCamEnabled: lobbyResult?.camEnabled ?? false,
-      audioDeviceId: lobbyResult?.audioDeviceId,
-      videoDeviceId: lobbyResult?.videoDeviceId,
-      onRoomState: setRoomState,
-    },
-=======
     isLive && Boolean(participantId),
     myLocked,
     () => transcriptRefreshRef.current(),
     (message) => transcriptDraftHandlerRef.current(message),
     devicePreferences,
->>>>>>> a42fb56 (Mic fixes with ui changes)
+    { onRoomState: setRoomState },
   );
   const localAudioTile = media.tiles.find((tile) => tile.isLocal);
   const localSpeaking = localAudioTile?.speaking ?? false;
@@ -518,7 +486,6 @@ export default function RoomClient({
   // Never OR a stale roomState.aiSpeaking with a fresh server poll, and never
   // deadlock the mic button on a stale sfuCanPublish (clicking unmute verifies
   // authoritatively with POST /api/discussions/[id]/mic and restores SFU grants).
-  const myLocked = Boolean(myMembership && !myMembership.removed && myMembership.micLocked);
   const roomPaused = roomState?.paused ?? discussion.paused ?? false;
   const roomStateFresh =
     roomState !== null && now - new Date(roomState.updatedAt).getTime() < 8000;
@@ -747,15 +714,6 @@ export default function RoomClient({
       if (!aiEventsPrimed.current) {
         if (!turnRef.current) return;
         aiEventsPrimed.current = true;
-<<<<<<< HEAD
-        // Speak a brand-new opening welcome if the host just started the meeting.
-        for (const event of fresh) {
-          if (
-            SPOKEN_AI_KINDS.has(event.kind) &&
-            Date.now() - new Date(event.createdAt).getTime() <= 12_000
-          ) {
-            announceRef.current(event.message);
-=======
         const activeSpeech = data.events.find(
           (event) => event.id === turnRef.current?.aiSpeechEventId,
         );
@@ -765,15 +723,11 @@ export default function RoomClient({
           });
           if (!queued) {
             void recordAiPlayback(activeSpeech.id, voice.supported ? "FAILED" : "SKIPPED");
->>>>>>> a42fb56 (Mic fixes with ui changes)
           }
         }
         return;
       }
       for (const event of fresh) {
-<<<<<<< HEAD
-        if (SPOKEN_AI_KINDS.has(event.kind)) announceRef.current(event.message);
-=======
         if (!SPOKEN_AI_KINDS.has(event.kind)) continue;
         const queued = announceRef.current(event.message, event.id, (status) => {
           void recordAiPlayback(event.id, status);
@@ -781,7 +735,6 @@ export default function RoomClient({
         if (!queued) {
           void recordAiPlayback(event.id, voice.supported ? "FAILED" : "SKIPPED");
         }
->>>>>>> a42fb56 (Mic fixes with ui changes)
       }
     } catch (cause) {
       setTurnError(cause instanceof Error ? cause.message : "Could not load AI moderator messages.");
@@ -979,41 +932,19 @@ export default function RoomClient({
   const canSpeakNow = Boolean(
     turn?.state === "PARTICIPANT_SPEAKING" && turn.isActiveSpeaker && !myLocked && !removed,
   );
-<<<<<<< HEAD
-
-  // Authoritative microphone lock: whenever the host locks this mic, the AI
-  // moderator starts speaking, or the meeting pauses, release local capture immediately.
-  //
-  // FIX: `media.micEnabled` is intentionally excluded from the dependency array.
-  // The old code had it in deps, which caused the effect to fire every time the
-  // user toggled the mic ON (micEnabled: false → true), and if `micHardLocked`
-  // was still stale-true (AI-speaking window < 8 s), the mic was immediately
-  // force-muted again — making it impossible to unmute.
-  // Now the effect only runs when the lock state itself transitions, so the user
-  // can unmute normally once the server confirms the action via POST /mic.
-=======
   const turnSecondsRemaining = turn?.turnEndsAt
     ? Math.max(0, Math.ceil((Date.parse(turn.turnEndsAt) - now) / 1000))
     : null;
->>>>>>> a42fb56 (Mic fixes with ui changes)
   const setMic = media.setMic;
   const prevMicHardLockedRef = useRef(micHardLocked);
   useEffect(() => {
-<<<<<<< HEAD
     const prevLocked = prevMicHardLockedRef.current;
     prevMicHardLockedRef.current = micHardLocked;
 
-    // Force-mute only on lock transitions (unlocked → locked), so we don't
-    // repeatedly stomp on the user's own unmute attempts while locked state
-    // is stale (< 8 s old roomState broadcast).
-    if (micHardLocked && !prevLocked && media.micEnabled) {
+    if (((micHardLocked && !prevLocked) || !canSpeakNow) && media.micEnabled) {
       void setMic(false);
     }
-  }, [micHardLocked, setMic]); // intentionally omit `media.micEnabled` – we act on lock transitions only
-=======
-    if (!canSpeakNow && media.micEnabled) void setMic(false);
-  }, [canSpeakNow, media.micEnabled, setMic]);
->>>>>>> a42fb56 (Mic fixes with ui changes)
+  }, [canSpeakNow, micHardLocked, media.micEnabled, setMic]);
 
   const disconnect = media.disconnect;
   useEffect(() => {
@@ -1172,24 +1103,6 @@ export default function RoomClient({
   }, [isLive, discussion.startedAt, discussion.durationMin, now]);
 
   const remoteWithAudio = media.tiles.filter((tile) => !tile.isLocal && tile.audioTrack);
-
-  if ((discussion.status === "SCHEDULED" || discussion.status === "LIVE") && !lobbyResult && !removed) {
-    return (
-      <PreJoinLobby
-        discussionId={discussion.id}
-        title={discussion.title}
-        topic={discussion.topic}
-        mode={discussion.mode}
-        userName={user.name}
-        transcriptionEnabled={discussion.transcriptionEnabled}
-        initialConsent={consented}
-        onEnter={(res) => {
-          setLobbyResult(res);
-          void refresh();
-        }}
-      />
-    );
-  }
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -1533,7 +1446,6 @@ export default function RoomClient({
         <section className="flex flex-col gap-4">
           {isLive ? (
             <>
-<<<<<<< HEAD
               <div className="flex items-center justify-end gap-1.5">
                 <button
                   type="button"
@@ -1578,20 +1490,6 @@ export default function RoomClient({
                   invitedParticipantId={invitedParticipantId}
                 />
               )}
-=======
-              {/* Everyone is seated around the table at their own numbered seat,
-                  so the room reads as a real discussion rather than a grid. */}
-              <GdTable
-                participants={discussion.participants}
-                tiles={media.tiles}
-                maxSeats={discussion.maxParticipants}
-                selfUserId={user.id}
-                activeSpeakerId={turn?.activeParticipantId ?? null}
-                aiEnabled={discussion.aiEnabled}
-                aiSpeaking={turn?.state === "AI_SPEAKING"}
-                topic={discussion.topic}
-              />
->>>>>>> a42fb56 (Mic fixes with ui changes)
               {media.status !== "connected" && (
                 <div className="card flex min-h-[90px] flex-col items-center justify-center gap-2 text-sm text-muted">
                   {media.status === "error" ? (
@@ -1617,33 +1515,6 @@ export default function RoomClient({
                 <button
                   type="button"
                   onClick={() => void media.toggleMic()}
-<<<<<<< HEAD
-                  disabled={media.status !== "connected" || micHardLocked || removed}
-                  className={
-                    micHardLocked
-                      ? "btn-ghost cursor-not-allowed opacity-70"
-                      : media.micEnabled
-                        ? "btn-primary"
-                        : "btn-ghost"
-                  }
-                >
-                  {micHardLocked ? (
-                    <Lock className="h-4 w-4 text-warn" />
-                  ) : media.micEnabled ? (
-                    <Mic className="h-4 w-4" />
-                  ) : (
-                    <MicOff className="h-4 w-4" />
-                  )}
-                  {effectiveAiSpeaking
-                    ? "Locked (AI speaking)"
-                    : roomPaused
-                      ? "Locked (Paused)"
-                      : micHardLocked
-                        ? "Microphone locked"
-                        : media.micEnabled
-                          ? "Microphone on"
-                          : "Microphone off"}
-=======
                   disabled={media.status !== "connected" || !canSpeakNow}
                   className={media.micEnabled ? "btn-primary" : "btn-ghost"}
                 >
@@ -1655,7 +1526,6 @@ export default function RoomClient({
                         ? "Microphone on"
                         : "Unmute for your turn"
                       : "Microphone muted until your turn"}
->>>>>>> a42fb56 (Mic fixes with ui changes)
                 </button>
                 <button
                   type="button"
@@ -1728,17 +1598,11 @@ export default function RoomClient({
                           ? "listening"
                           : "starting…"
                       : consented
-<<<<<<< HEAD
-                        ? micHardLocked
-                          ? "mic locked"
-                          : media.micEnabled
-                            ? "paused"
-                            : "mic off"
-=======
                         ? media.micEnabled
-                          ? "not transcribing"
+                          ? micHardLocked
+                            ? "mic locked"
+                            : "not transcribing"
                           : "mic off"
->>>>>>> a42fb56 (Mic fixes with ui changes)
                         : isLive
                           ? "consent needed"
                           : "offline"}

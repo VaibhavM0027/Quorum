@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import DeviceCheck, { type RoomDevicePreferences } from "@/components/DeviceCheck";
+import { useState } from "react";
+import PreJoinLobby, { type PreJoinResult } from "@/components/PreJoinLobby";
 import RoomClient, { type RoomDiscussion } from "@/components/RoomClient";
-import { Loader2 } from "lucide-react";
+import type { LivekitDevicePreferences } from "@/hooks/useLivekitRoom";
 
 type RoomUser = { id: string; name: string; email: string; role: "HOST" | "PARTICIPANT" };
 
@@ -16,50 +16,30 @@ export default function RoomEntryClient({
   discussion: RoomDiscussion;
   participantId: string | null;
 }) {
-  const [preferences, setPreferences] = useState<RoomDevicePreferences | null>(null);
-  const [restoringPreferences, setRestoringPreferences] = useState(true);
+  const [preferences, setPreferences] = useState<LivekitDevicePreferences | null>(null);
 
-  useEffect(() => {
-    const key = `quorum-device-preferences:${discussion.id}`;
-    try {
-      const saved = sessionStorage.getItem(key);
-      if (saved) {
-        const parsed = JSON.parse(saved) as Partial<RoomDevicePreferences>;
-        if (
-          typeof parsed.microphoneId === "string" &&
-          typeof parsed.cameraId === "string" &&
-          typeof parsed.speakerId === "string" &&
-          typeof parsed.cameraOn === "boolean"
-        ) {
-          setPreferences({
-            microphoneId: parsed.microphoneId,
-            cameraId: parsed.cameraId,
-            speakerId: parsed.speakerId,
-            cameraOn: parsed.cameraOn,
-          });
-        }
-        sessionStorage.removeItem(key);
-      }
-    } catch {
-      // Re-run the check when this browser cannot read temporary tab storage.
-    } finally {
-      setRestoringPreferences(false);
-    }
-  }, [discussion.id]);
-
-  if (restoringPreferences) {
+  if (!preferences && (discussion.status === "SCHEDULED" || discussion.status === "LIVE")) {
     return (
-      <main className="grid min-h-dvh place-items-center text-sm text-muted" role="status">
-        <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Preparing your device check…</span>
-      </main>
-    );
-  }
-  if (!preferences) {
-    return (
-      <DeviceCheck
+      <PreJoinLobby
+        discussionId={discussion.id}
         title={discussion.title}
         topic={discussion.topic}
-        onContinue={setPreferences}
+        mode={discussion.mode}
+        userName={user.name}
+        transcriptionEnabled={discussion.transcriptionEnabled}
+        initialConsent={
+          discussion.participants.find((participant) => participant.id === participantId)
+            ?.transcriptionConsent ?? false
+        }
+        onEnter={(result: PreJoinResult) =>
+          setPreferences({
+            microphoneId: result.audioDeviceId ?? "",
+            cameraId: result.videoDeviceId ?? "",
+            speakerId: "",
+            cameraOn: result.camEnabled,
+            microphoneOn: result.micEnabled,
+          })
+        }
       />
     );
   }
@@ -69,7 +49,15 @@ export default function RoomEntryClient({
       user={user}
       discussion={discussion}
       participantId={participantId}
-      devicePreferences={preferences}
+      devicePreferences={
+        preferences ?? {
+          microphoneId: "",
+          cameraId: "",
+          speakerId: "",
+          cameraOn: false,
+          microphoneOn: false,
+        }
+      }
     />
   );
 }

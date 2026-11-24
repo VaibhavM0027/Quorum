@@ -193,7 +193,6 @@ model Discussion {
    * browsers playing it back. Used to keep the moderator silent while it is
    * already speaking.
    */
-<<<<<<< HEAD
   lastAiSpokeAt         DateTime?
   /**
    * Server-authoritative timestamp until which the AI moderator holds the
@@ -210,8 +209,6 @@ model Discussion {
   welcomePosted         Boolean @default(false)
   /** Ensures the AI closing summary is posted once when the meeting ends. */
   summaryPosted         Boolean @default(false)
-=======
-  lastAiSpokeAt DateTime?
 
   /// Server-authoritative floor state; all microphones are denied outside a turn.
   turnState               TurnState @default(IDLE)
@@ -220,7 +217,6 @@ model Discussion {
   turnEndsAt              DateTime?
   activeAiSpeechEventId   String?   @unique
   aiSpeechDeadlineAt      DateTime?
->>>>>>> a42fb56 (Mic fixes with ui changes)
 
   /// Breakout rooms split a large room into groups small enough to talk in.
   /// Off by default: a discussion runs as one room until the host asks for it.
@@ -408,14 +404,9 @@ model TranscriptSegment {
   text       String
   startedAt  DateTime
   endedAt    DateTime
-<<<<<<< HEAD
   durationMs Int      @default(0)
   wordCount  Int      @default(0)
   confidence Float?
-=======
-  durationMs Int              @default(0)
-  wordCount  Int              @default(0)
->>>>>>> a42fb56 (Mic fixes with ui changes)
   status     TranscriptStatus @default(FINAL)
   /// Stable client-generated key that lets a live draft become its final row.
   streamId   String?

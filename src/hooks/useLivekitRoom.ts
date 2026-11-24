@@ -13,11 +13,8 @@ import {
   TRANSCRIPT_PARTIAL_TOPIC,
   TRANSCRIPT_UPDATE_TOPIC,
 } from "@/lib/transcript";
-import type { RoomStateBroadcast } from "@/lib/livekit";
+import { ROOM_STATE_TOPIC, type RoomStateBroadcast } from "@/lib/livekit";
 
-<<<<<<< HEAD
-const ROOM_STATE_TOPIC = "quorum.room.state";
-=======
 /**
  * LiveKit connection for a single discussion room.
  *
@@ -27,7 +24,6 @@ const ROOM_STATE_TOPIC = "quorum.room.state";
  * `livekit-client` is imported dynamically because it touches browser globals
  * and must never run during server rendering.
  */
->>>>>>> a42fb56 (Mic fixes with ui changes)
 
 export type LivekitStatus = "idle" | "connecting" | "connected" | "reconnecting" | "error";
 
@@ -60,20 +56,17 @@ export type TranscriptDraftMessage =
       participantIdentity: string;
     };
 
-<<<<<<< HEAD
 export type LivekitConnectOptions = {
-  initialMicEnabled?: boolean;
-  initialCamEnabled?: boolean;
-  audioDeviceId?: string;
-  videoDeviceId?: string;
+  breakoutRoom?: number | null;
   onRoomState?: (state: RoomStateBroadcast) => void;
-=======
+};
+
 export type LivekitDevicePreferences = {
-    microphoneId: string;
-    cameraId: string;
-    speakerId: string;
-    cameraOn: boolean;
->>>>>>> a42fb56 (Mic fixes with ui changes)
+  microphoneId: string;
+  cameraId: string;
+  speakerId: string;
+  cameraOn: boolean;
+  microphoneOn?: boolean;
 };
 
 function parseHost(metadata: string | undefined): boolean {
@@ -141,34 +134,23 @@ export function useLivekitRoom(
   micLocked: boolean,
   onTranscriptUpdate?: () => void,
   onTranscriptDraft?: (message: TranscriptDraftMessage) => void,
-<<<<<<< HEAD
-  options: LivekitConnectOptions = {},
-=======
   devicePreferences: LivekitDevicePreferences = {
     microphoneId: "",
     cameraId: "",
     speakerId: "",
     cameraOn: false,
   },
->>>>>>> a42fb56 (Mic fixes with ui changes)
+  options: LivekitConnectOptions = {},
 ) {
   const roomRef = useRef<LKRoom | null>(null);
   const onTranscriptUpdateRef = useRef(onTranscriptUpdate);
   onTranscriptUpdateRef.current = onTranscriptUpdate;
   const onTranscriptDraftRef = useRef(onTranscriptDraft);
   onTranscriptDraftRef.current = onTranscriptDraft;
-<<<<<<< HEAD
   const onRoomStateRef = useRef(options.onRoomState);
   onRoomStateRef.current = options.onRoomState;
-
-  const audioDeviceIdRef = useRef(options.audioDeviceId);
-  audioDeviceIdRef.current = options.audioDeviceId;
-  const videoDeviceIdRef = useRef(options.videoDeviceId);
-  videoDeviceIdRef.current = options.videoDeviceId;
-
-=======
   const { microphoneId, cameraId, speakerId, cameraOn } = devicePreferences;
->>>>>>> a42fb56 (Mic fixes with ui changes)
+  const breakoutRoom = options.breakoutRoom ?? null;
   const [status, setStatus] = useState<LivekitStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [tiles, setTiles] = useState<TileInfo[]>([]);
@@ -177,27 +159,21 @@ export function useLivekitRoom(
   const [sfuCanPublish, setSfuCanPublish] = useState(true);
   const [serverSttActive, setServerSttActive] = useState(false);
   const [needsAudioUnblock, setNeedsAudioUnblock] = useState(false);
-<<<<<<< HEAD
-=======
   /**
    * The microphone state the participant last chose.
    *
    * A fresh connection starts with the microphone off. Remembering the choice
    * restores it after an ordinary reconnect, unless the host has locked it.
    */
-  const micWantedRef = useRef(false);
->>>>>>> a42fb56 (Mic fixes with ui changes)
+  const micWantedRef = useRef(Boolean(devicePreferences.microphoneOn));
 
-  const micWantedRef = useRef(Boolean(options.initialMicEnabled));
-  const camWantedRef = useRef(Boolean(options.initialCamEnabled));
-
-  // Keep pre-join preferences synced before the initial connect fires.
+  const camWantedRef = useRef(cameraOn);
   useEffect(() => {
     if (status === "idle") {
-      micWantedRef.current = Boolean(options.initialMicEnabled);
-      camWantedRef.current = Boolean(options.initialCamEnabled);
+      micWantedRef.current = Boolean(devicePreferences.microphoneOn);
+      camWantedRef.current = cameraOn;
     }
-  }, [options.initialMicEnabled, options.initialCamEnabled, status]);
+  }, [cameraOn, devicePreferences.microphoneOn, status]);
 
 function canPublishMicFromPermissions(
   permissions: Participant["permissions"] | undefined,
@@ -258,6 +234,7 @@ function canPublishMicFromPermissions(
       setError(null);
       try {
         const params = new URLSearchParams({ discussionId });
+        if (breakoutRoom !== null) params.set("room", String(breakoutRoom));
         const tokenRes = await fetch(`/api/livekit/token?${params.toString()}`, {
           cache: "no-store",
         });
@@ -288,18 +265,10 @@ function canPublishMicFromPermissions(
           audioCaptureDefaults: {
             echoCancellation: true,
             noiseSuppression: true,
-<<<<<<< HEAD
-            ...(audioDeviceIdRef.current ? { deviceId: audioDeviceIdRef.current } : {}),
-          },
-          videoCaptureDefaults: videoDeviceIdRef.current
-            ? { deviceId: videoDeviceIdRef.current }
-            : undefined,
-=======
             ...(microphoneId ? { deviceId: { exact: microphoneId } } : {}),
           },
           videoCaptureDefaults: cameraId ? { deviceId: { exact: cameraId } } : undefined,
           audioOutput: speakerId ? { deviceId: speakerId } : undefined,
->>>>>>> a42fb56 (Mic fixes with ui changes)
         });
         roomRef.current = room;
 
@@ -468,7 +437,7 @@ function canPublishMicFromPermissions(
               void room.localParticipant
                 .setCameraEnabled(
                   true,
-                  videoDeviceIdRef.current ? { deviceId: videoDeviceIdRef.current } : undefined,
+                  cameraId ? { deviceId: cameraId } : undefined,
                 )
                 .catch(() => {});
             }
@@ -494,34 +463,16 @@ function canPublishMicFromPermissions(
         setStatus("connected");
         setNeedsAudioUnblock(!room.canPlaybackAudio);
 
-<<<<<<< HEAD
         const canPublishNow =
           data.canPublish !== false &&
           canPublishMicFromPermissions(room.localParticipant.permissions);
         setSfuCanPublish(canPublishNow);
 
-        if (micWantedRef.current && canPublishNow) {
-=======
-        if (cameraOn) {
-          try {
-            await room.localParticipant.setCameraEnabled(true);
-          } catch (cameraError) {
-            setError(
-              cameraError instanceof Error
-                ? `Camera could not start: ${cameraError.message}`
-                : "Camera could not start. You can continue with it off.",
-            );
-          }
-        }
-
-        // A new connection starts muted; put back the microphone state the
-        // participant had chosen before they were moved.
-        if (micWantedRef.current && !micLocked) {
->>>>>>> a42fb56 (Mic fixes with ui changes)
+        if (micWantedRef.current && canPublishNow && !micLocked) {
           try {
             await room.localParticipant.setMicrophoneEnabled(
               true,
-              audioDeviceIdRef.current ? { deviceId: audioDeviceIdRef.current } : undefined,
+              microphoneId ? { deviceId: microphoneId } : undefined,
             );
           } catch {
             micWantedRef.current = false;
@@ -531,7 +482,7 @@ function canPublishMicFromPermissions(
           try {
             await room.localParticipant.setCameraEnabled(
               true,
-              videoDeviceIdRef.current ? { deviceId: videoDeviceIdRef.current } : undefined,
+              cameraId ? { deviceId: cameraId } : undefined,
             );
           } catch {
             camWantedRef.current = false;
@@ -554,11 +505,18 @@ function canPublishMicFromPermissions(
       roomRef.current = null;
       if (room) void room.disconnect();
     };
-<<<<<<< HEAD
-  }, [discussionId, breakoutRoom, shouldConnect, sync, releaseLocalMic]);
-=======
-  }, [discussionId, shouldConnect, micLocked, microphoneId, cameraId, speakerId, cameraOn, sync]);
->>>>>>> a42fb56 (Mic fixes with ui changes)
+  }, [
+    discussionId,
+    breakoutRoom,
+    shouldConnect,
+    micLocked,
+    microphoneId,
+    cameraId,
+    speakerId,
+    cameraOn,
+    sync,
+    releaseLocalMic,
+  ]);
 
   const startAudio = useCallback(async () => {
     const room = roomRef.current;
@@ -611,7 +569,7 @@ function canPublishMicFromPermissions(
       try {
         const publication = await room.localParticipant.setMicrophoneEnabled(
           enabled,
-          enabled && audioDeviceIdRef.current ? { deviceId: audioDeviceIdRef.current } : undefined,
+          enabled && microphoneId ? { deviceId: microphoneId } : undefined,
         );
         if (!enabled) {
           const [anyAudio] = room.localParticipant.audioTrackPublications.values();
@@ -672,14 +630,14 @@ function canPublishMicFromPermissions(
       const next = !room.localParticipant.isCameraEnabled;
       await room.localParticipant.setCameraEnabled(
         next,
-        next && videoDeviceIdRef.current ? { deviceId: videoDeviceIdRef.current } : undefined,
+        next && cameraId ? { deviceId: cameraId } : undefined,
       );
       camWantedRef.current = next;
       sync();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not access the camera");
     }
-  }, [sync]);
+  }, [cameraId, sync]);
 
   const disconnect = useCallback(async () => {
     const room = roomRef.current;
